@@ -3,6 +3,8 @@
 
 <h3> <a href="https://github.com/locomanip-duet/locomanip-duet.github.io/blob/master/RoboDuet.pdf">📝 Paper</a> | <a href="https://locomanip-duet.github.io/"> 🖼️ Project Page</a></h3>
 
+> **Note:** 本仓库在原始 RoboDuet 基础上加入了 Go2+Piper 的 URDF 模型，并在代码中进行了相应的适配，以支持 Go2+Piper 机器人的训练与部署。
+
 This repo is an official PyTorch implementation of our paper *<b>"RoboDuet: Learning a Cooperative Policy for Whole-body Legged Loco-Manipulation}"</b>*. Thanks to the cooperative policy mechanism and two-stage training strategy, the proposed framework demonstrates agile whole-body control and zero-shot transfer deployment capabilities. <b>📺️More demo details can be found on our project page.</b>
 
 
