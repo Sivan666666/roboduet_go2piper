@@ -6,47 +6,65 @@ from go1_gym.envs.automatic.legged_robot_config import Cfg
 
 def config_asset(Cnfg: Union[Cfg, Meta]):
 
-    Cnfg.asset.file = '{MINI_GYM_ROOT_DIR}/resources/robots/arx5p2Go1/urdf/arx5p2Go1.urdf'
+    Cnfg.asset.file = '{MINI_GYM_ROOT_DIR}/resources/robots/go2_piper/go2/urdf/go2piper.urdf'
     
     Cnfg.asset.penalize_contacts_on = [
         'base', 'trunk',
         "arm", "wrist", 'zarx',
         "gripper", "thigh", "calf",
-        "Head"
+        "Head", "piper",
     ]
     
     Cnfg.asset.terminate_after_contacts_on = ['']
     
     Cnfg.asset.hip_joints = {'hip'}
     
-    Cnfg.control.stiffness = {'joint': 35., 'widow': 5., "zarx": 5., "zarx_j3": 20}  # [N*m/rad]
+    Cnfg.control.stiffness = {'joint': 40., 'widow': 5., "zarx": 5., "zarx_j3": 20. , "piper": 5.}  # [N*m/rad]
     
     
     Cnfg.arm.control.stiffness_arm = {
-            "zarx": 50,
-            "zarx_j1": 40,
-            "zarx_j2": 70,
-            "zarx_j3": 70,
-            "zarx_j4": 25,
-            "zarx_j5": 25,
-            "zarx_j6": 25,
-            "zarx_j7": 50,
-            "zarx_j8": 50,
+            # "zarx": 50,
+            # "zarx_j1": 40,
+            # "zarx_j2": 70,
+            # "zarx_j3": 70,
+            # "zarx_j4": 25,
+            # "zarx_j5": 25,
+            # "zarx_j6": 25,
+            # "zarx_j7": 50,
+            # "zarx_j8": 50,
+            # "zarx": 50,
+            "piper_joint1": 80,
+            "piper_joint2": 80,
+            "piper_joint3": 80,
+            "piper_joint4": 45,
+            "piper_joint5": 10,
+            "piper_joint6": 10,
+            "piper_joint7": 400,
+            "piper_joint8": 400,
     }  # [N*m/rad]
     Cnfg.arm.control.damping_arm = {
-            "zarx": 20,
-            "zarx_j1": 3,
-            "zarx_j2": 15,
-            "zarx_j3": 15,
-            "zarx_j4": 2,
-            "zarx_j5": 2,
-            "zarx_j6": 2,
-            "zarx_j7": 20,
-            "zarx_j8": 20,
+            # "zarx": 20,
+            # "zarx_j1": 3,
+            # "zarx_j2": 15,
+            # "zarx_j3": 15,
+            # "zarx_j4": 2,
+            # "zarx_j5": 2,
+            # "zarx_j6": 2,
+            # "zarx_j7": 20,
+            # "zarx_j8": 20,
+            # "zarx": 20,
+            "piper_joint1": 5,
+            "piper_joint2": 5,
+            "piper_joint3": 5,
+            "piper_joint4": 5,
+            "piper_joint5": 1.5,
+            "piper_joint6": 1.5,
+            "piper_joint7": 5,
+            "piper_joint8": 5,
     }  # [N*m*s/rad]
 
 
-    Cnfg.dog.control.stiffness_leg = {'joint': 35.}  # [N*m/rad]
+    Cnfg.dog.control.stiffness_leg = {'joint': 40.}  # [N*m/rad]
     Cnfg.dog.control.damping_leg = {'joint': 1.}  # [N*m*s/rad]
    
     Cnfg.asset.render_sphere = True # NOTE no use in headless 
@@ -67,24 +85,33 @@ def config_asset(Cnfg: Union[Cfg, Meta]):
         'FR_calf_joint': -1.5,  # [rad]
         'RR_calf_joint': -1.5,  # [rad]
         
-        'widow_waist': 0., 
-        'widow_shoulder': 0., 
-        'widow_elbow': 0., 
-        'forearm_roll': 0., 
-        'widow_wrist_angle': 0., 
-        'widow_wrist_rotate': 0., 
-        'widow_forearm_roll': 0., 
-        'gripper': 0., 
-        'widow_left_finger': 0., 
-        'widow_right_finger': 0.,
+        # 'widow_waist': 0., 
+        # 'widow_shoulder': 0., 
+        # 'widow_elbow': 0., 
+        # 'forearm_roll': 0., 
+        # 'widow_wrist_angle': 0., 
+        # 'widow_wrist_rotate': 0., 
+        # 'widow_forearm_roll': 0., 
+        # 'gripper': 0., 
+        # 'widow_left_finger': 0., 
+        # 'widow_right_finger': 0.,
         
-        "zarx_j1": 0.0,
-        "zarx_j2": 0.8,
-        "zarx_j3": 0.8,
-        "zarx_j4": 0.0,
-        "zarx_j5": 0.0,
-        "zarx_j6": 0.0,
-        "zarx_j7": 0.0,
-        "zarx_j8": 0.0,
+        # "zarx_j1": 0.0,
+        # "zarx_j2": 0.8,
+        # "zarx_j3": 0.8,
+        # "zarx_j4": 0.0,
+        # "zarx_j5": 0.0,
+        # "zarx_j6": 0.0,
+        # "zarx_j7": 0.0,
+        # "zarx_j8": 0.0,
+
+        "piper_joint1": 0.0,
+        "piper_joint2": 0.6,
+        "piper_joint3": -0.5,
+        "piper_joint4": 0.0,
+        "piper_joint5": 0.0,
+        "piper_joint6": 0.0,
+        "piper_joint7": 0.0,
+        "piper_joint8": 0.0,
         
     }

@@ -151,7 +151,7 @@ def train_go1(arg):
     if args.robot == "go1":
         Cfg.asset.file = '{MINI_GYM_ROOT_DIR}/resources/robots/arx5p2Go1/urdf/arx5p2Go1.urdf'
     elif args.robot == "go2":
-        Cfg.asset.file = '{MINI_GYM_ROOT_DIR}/resources/robots/go2/urdf/arx5go2.urdf'
+        Cfg.asset.file = '{MINI_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2piper.urdf'
     
     if args.headless:
         RunnerArgs.log_video = False
@@ -159,7 +159,7 @@ def train_go1(arg):
     
     now = datetime.now()
     stem = Path(__file__).stem
-    wandb.init(entity="RoboDuet",
+    wandb.init(
                project="dev",
                group=args.run_name,
                mode=mode,

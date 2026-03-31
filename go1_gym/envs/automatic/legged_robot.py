@@ -726,7 +726,7 @@ class LeggedRobot(BaseTask):
 
             if self.cfg.control.control_type == 'M':
                 for i in range(8):
-                    joint_name = f"zarx_j{i+1}"
+                    joint_name = f"piper_joint{i+1}"
                     joint_idx = self.num_actions_loco + i
                     props[joint_idx]['stiffness'] = self.cfg.arm.control.stiffness_arm[joint_name]
                     props[joint_idx]['damping'] = self.cfg.arm.control.damping_arm[joint_name]
@@ -1333,13 +1333,19 @@ class LeggedRobot(BaseTask):
                 self.d_gains[i] = 0.
                 continue
 
-            for dof_name in self.cfg.control.stiffness.keys():
-                if dof_name in name:
-                    self.p_gains[i] = self.cfg.dog.control.stiffness_leg[dof_name] \
-                        if i < self.num_actions_loco else self.cfg.arm.control.stiffness_arm[dof_name] # [N*m/rad]
-                    self.d_gains[i] = self.cfg.dog.control.damping_leg[dof_name] \
-                        if i < self.num_actions_loco else self.cfg.arm.control.damping_arm[dof_name]  # [N*m*s/rad]
-                    found = True
+            # 区分一下当前是狗腿还是机械臂
+            if i < self.num_actions_loco:  # 狗腿部分
+                for dof_name in self.cfg.dog.control.stiffness_leg.keys(): # 直接遍历狗特有的字典找
+                    if dof_name in name:
+                        self.p_gains[i] = self.cfg.dog.control.stiffness_leg[dof_name]
+                        self.d_gains[i] = self.cfg.dog.control.damping_leg[dof_name]
+                        found = True
+            else:  # 机械臂部分
+                # 这里推荐直接使用具体关节名称去字典里拿
+                # 因为之前已经把名字传给物理引擎了，可以直接拿出来复用
+                self.p_gains[i] = self.cfg.arm.control.stiffness_arm.get(name, 30.0)    
+                self.d_gains[i] = self.cfg.arm.control.damping_arm.get(name, 2.0)
+                found = True
 
             if not found:
                 self.p_gains[i] = 0.
