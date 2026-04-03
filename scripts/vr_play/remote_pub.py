@@ -12,8 +12,8 @@ sys.path.append("../")
 from go1_gym.lcm_types.arm_actions_t import arm_actions_t
  
 # NOTE This is the ip and port of the pc host connected to vr
-GLOBAL_IP = "192.168.12.198"
-GLOBAL_PORT = "34565"
+GLOBAL_IP = "192.168.1.126"
+GLOBAL_PORT = "34567"
 lcm_node = lcm.LCM("udpm://239.255.76.67:7136?ttl=255")
 
 def calibrate(sock: zmq.Socket, start_pose=None):

@@ -31,19 +31,100 @@ roll_cmd, pitch_cmd, yaw_cmd = 0.1, 0.5, 0.0
 
 shutdown = False
 delta_xyzrpy = np.zeros(6)
+last_lcm_recv_time = 0.0
+lcm_data_seq = 0
 
 import signal
 import lcm
 lcm_node = lcm.LCM("udpm://239.255.76.67:7136?ttl=255")
 
+
+class ArmJointPlotter:
+    def __init__(self, joint_names, history_s=10.0, update_every=2):
+        self.joint_names = joint_names
+        self.history_s = float(history_s)
+        self.update_every = max(1, int(update_every))
+        self.enabled = False
+
+        self.t_hist = []
+        self.v_hist = [[] for _ in joint_names]
+
+        try:
+            import matplotlib.pyplot as plt
+            self.plt = plt
+            self.plt.ion()
+            self.fig, self.ax = self.plt.subplots(1, 1, figsize=(10, 4))
+            self.lines = []
+            for name in joint_names:
+                (line,) = self.ax.plot([], [], linewidth=1.8, label=name)
+                self.lines.append(line)
+            self.ax.set_title("Policy Arm Joint Targets (rad)")
+            self.ax.set_xlabel("Time [s]")
+            self.ax.set_ylabel("Joint Angle [rad]")
+            self.ax.grid(True, alpha=0.3)
+            self.ax.legend(loc="upper right", ncol=2)
+            self.enabled = True
+        except Exception as exc:
+            self.plt = None
+            print(f"[plot] matplotlib init failed, disable plotting: {exc}")
+
+    def update(self, step_id, t, values):
+        if not self.enabled:
+            return
+
+        self.t_hist.append(float(t))
+        for i, v in enumerate(values):
+            self.v_hist[i].append(float(v))
+
+        min_t = self.t_hist[-1] - self.history_s
+        keep_idx = 0
+        while keep_idx < len(self.t_hist) and self.t_hist[keep_idx] < min_t:
+            keep_idx += 1
+        if keep_idx > 0:
+            self.t_hist = self.t_hist[keep_idx:]
+            for i in range(len(self.v_hist)):
+                self.v_hist[i] = self.v_hist[i][keep_idx:]
+
+        if step_id % self.update_every != 0:
+            return
+
+        for i, line in enumerate(self.lines):
+            line.set_data(self.t_hist, self.v_hist[i])
+
+        t0 = self.t_hist[0] if self.t_hist else 0.0
+        t1 = self.t_hist[-1] if self.t_hist else 1.0
+        if t1 <= t0:
+            t1 = t0 + 1e-3
+        self.ax.set_xlim(t0, t1)
+
+        flat = [x for series in self.v_hist for x in series]
+        if flat:
+            y_min = min(flat)
+            y_max = max(flat)
+            if y_max - y_min < 1e-3:
+                y_pad = 0.05
+            else:
+                y_pad = 0.08 * (y_max - y_min)
+            self.ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
+
+    def close(self):
+        if self.enabled:
+            self.plt.ioff()
+            self.plt.close(self.fig)
+            self.enabled = False
+
 def arm_data_cb(channel, data):
     global shutdown
     if shutdown:
-        exit()
-    global delta_xyzrpy
-    print("update armdata")
+        return
+    global delta_xyzrpy, last_lcm_recv_time, lcm_data_seq
     msg = arm_actions_t.decode(data)
     delta_xyzrpy = np.array(msg.data)[:6]
+    last_lcm_recv_time = time.time()
+    lcm_data_seq += 1
 
 def signal_handler(sig, frame):
     global shutdown
@@ -51,17 +132,18 @@ def signal_handler(sig, frame):
 
 def lcm_thread():
     while not shutdown:
-        lcm_node.handle()
+        # Use timeout so the loop can observe shutdown quickly.
+        lcm_node.handle_timeout(50)
 
 def play_go1(args):
     
     signal.signal(signal.SIGINT, signal_handler)
     
     vr_control_subscription = lcm_node.subscribe("arm_control_data", arm_data_cb)
-    thread1 = threading.Thread(target=lcm_thread, daemon=False)
+    thread1 = threading.Thread(target=lcm_thread, daemon=True)
     thread1.start()
     
-    global x_vel_cmd, y_vel_cmd, yaw_vel_cmd, l_cmd, p_cmd, y_cmd, roll_cmd, pitch_cmd, yaw_cmd, delta_xyzrpy, logdir, ckpt_id
+    global x_vel_cmd, y_vel_cmd, yaw_vel_cmd, l_cmd, p_cmd, y_cmd, roll_cmd, pitch_cmd, yaw_cmd, delta_xyzrpy, logdir, ckpt_id, last_lcm_recv_time, lcm_data_seq
     
     logdir = args.logdir
     ckpt_id = str(args.ckptid).zfill(6)
@@ -69,11 +151,45 @@ def play_go1(args):
     from go1_gym.utils.global_switch import global_switch
     global_switch.open_switch()
     
-    env, cfg = load_env(logdir, wrapper=KeyboardWrapper, headless=args.headless, device=args.sim_device)
+    arm_joint_names = None
+    if args.arm_joint_names:
+        arm_joint_names = [x.strip() for x in args.arm_joint_names.split(",") if x.strip()]
+
+    env, cfg = load_env(
+        logdir,
+        wrapper=KeyboardWrapper,
+        headless=args.headless,
+        device=args.sim_device,
+        apply_asset_config_override=True,
+        arm_kp=args.arm_kp,
+        arm_kd=args.arm_kd,
+        arm_joint_names=arm_joint_names,
+    )
     dog_policy = load_dog_policy(logdir, ckpt_id, cfg)
     arm_policy = load_arm_policy(logdir, ckpt_id, cfg)
+
+    arm_start = env.num_actions_loco
+    arm_count = env.num_actions_arm
+    arm_idx = torch.arange(arm_start, arm_start + arm_count, dtype=torch.long, device=env.device)
+    arm_names = [env.dof_names[i] for i in arm_idx.tolist()]
+    plot_joint_num = max(1, min(int(args.plot_num_joints), arm_count))
+    plot_joint_names = arm_names[:plot_joint_num]
+
+    # Plot-side tensors use CPU to avoid device mismatch with CPU policy outputs.
+    default_arm = env.default_dof_pos[0, arm_idx].detach().cpu().clone()
+    action_scale = float(cfg.control.action_scale)
+    clip_actions = float(cfg.normalization.clip_actions)
+
+    arm_plotter = None
+    if args.plot_arm_joints:
+        arm_plotter = ArmJointPlotter(
+            plot_joint_names,
+            history_s=args.plot_history_s,
+            update_every=args.plot_update_every,
+        )
     
-    env.enable_viewer_sync = True
+    # NOTE: env is a HistoryWrapper; render flags must be set on the wrapped env.
+    env.env.enable_viewer_sync = True
 
     num_eval_steps = 30000
 
@@ -93,6 +209,11 @@ def play_go1(args):
     env.commands_arm[:, 3] = roll_cmd
     env.commands_arm[:, 4] = pitch_cmd
     env.commands_arm[:, 5] = yaw_cmd
+    # Keep command observation / visualization in sync with external commands.
+    env.env.update_arm_commands()
+
+    default_cmd = np.array([l_cmd, p_cmd, y_cmd, roll_cmd, pitch_cmd, yaw_cmd], dtype=np.float64)
+    lcm_stale_timeout_s = 0.3
     
     obs = env.get_arm_observations()
     
@@ -101,54 +222,78 @@ def play_go1(args):
     filter_rate = 0.8
     pitch_filter_rate = 0.95
     
-    for i in (range(num_eval_steps)):
+    try:
+        for i in (range(num_eval_steps)):
+            if shutdown:
+                break
 
-        with torch.no_grad():
-            obs = env.get_arm_observations()
-            actions_arm = arm_policy(obs)
-            
-            if last_arm_actions is None:
-                last_arm_actions = actions_arm
-                last_pitch_roll = actions_arm[..., -2:]
+            # Only use remote delta when LCM data is fresh; otherwise keep default command.
+            now = time.time()
+            has_fresh_lcm = (lcm_data_seq > 0) and ((now - last_lcm_recv_time) <= lcm_stale_timeout_s)
+            if has_fresh_lcm:
+                delta_x1, delta_y1, delta_z1, delta_roll, delta_pitch, delta_yaw = delta_xyzrpy
+                delta_x1 += 0.3
+                delta_l = np.sqrt(delta_x1**2 + delta_y1**2 + delta_z1**2)
+                delta_y = np.arctan2(delta_y1, delta_x1)
+                delta_p = np.arcsin(delta_z1 / delta_l) if delta_l != 0 else 0
+
+                cmd_l = min(max(delta_l + 0.2, 0.3), 0.8)  # 0.3 ~ 0.8
+                cmd_p = min(max(delta_p + 0.3, -np.pi/3), np.pi/3)   # -pi/3 ~ pi/3
+                cmd_y = min(max(delta_y, -np.pi/2), np.pi/2)  # -pi/2 ~ pi/2
+
+                cmd_alpha = min(max(delta_roll, -np.pi * 0.45), np.pi * 0.45)
+                cmd_beta = min(max(delta_pitch, -1.5), 1.5)
+                cmd_gamma = min(max(delta_yaw, -1.4), 1.4)
+                cmd_alpha, cmd_beta, cmd_gamma = rpy_to_abg(cmd_alpha, cmd_beta, cmd_gamma)
+
+                env.commands_arm[:, 0] = cmd_l
+                env.commands_arm[:, 1] = cmd_p
+                env.commands_arm[:, 2] = cmd_y
+                env.commands_arm[:, 3] = cmd_alpha
+                env.commands_arm[:, 4] = cmd_beta
+                env.commands_arm[:, 5] = cmd_gamma
             else:
-                last_arm_actions = filter_rate * last_arm_actions + (1 - filter_rate) * actions_arm
-                last_pitch_roll = pitch_filter_rate * last_pitch_roll + (1 - pitch_filter_rate) * actions_arm[..., -2:]
-                
+                env.commands_arm[:, 0] = default_cmd[0]
+                env.commands_arm[:, 1] = default_cmd[1]
+                env.commands_arm[:, 2] = default_cmd[2]
+                env.commands_arm[:, 3] = default_cmd[3]
+                env.commands_arm[:, 4] = default_cmd[4]
+                env.commands_arm[:, 5] = default_cmd[5]
 
-            env.plan(last_pitch_roll)
-            dog_obs = env.get_dog_observations()
-            actions_dog = dog_policy(dog_obs)
+            # Synchronize internal command buffers so the rendered marker follows remote/default target
+            # instead of stale sampled targets.
+            env.env.update_arm_commands()
 
-        ret = env.step(actions_dog, last_arm_actions[..., :-2], )
+            with torch.no_grad():
+                obs = env.get_arm_observations()
+                actions_arm = arm_policy(obs)
 
+                if last_arm_actions is None:
+                    last_arm_actions = actions_arm
+                    last_pitch_roll = actions_arm[..., -2:]
+                else:
+                    last_arm_actions = filter_rate * last_arm_actions + (1 - filter_rate) * actions_arm
+                    last_pitch_roll = pitch_filter_rate * last_pitch_roll + (1 - pitch_filter_rate) * actions_arm[..., -2:]
 
-        delta_x1, delta_y1, delta_z1, delta_roll, delta_pitch, delta_yaw = delta_xyzrpy
-        delta_x1 += 0.3
-        delta_l = np.sqrt(delta_x1**2 + delta_y1**2 + delta_z1**2)
-        delta_y = np.arctan2(delta_y1, delta_x1)
-        delta_p = np.arcsin(delta_z1 / delta_l) if delta_l != 0 else 0
-    
-        print("delta_xyzrpy: ", delta_x1, delta_y1, delta_z1, delta_roll, delta_pitch, delta_yaw)
-        print("delta_lpy: ", delta_l, delta_p, delta_y)
-        
-        cmd_l = min(max(delta_l + 0.2, 0.3), 0.8)  # 0.3 ~ 0.8
-        cmd_p = min(max(delta_p + 0.3, -np.pi/3), np.pi/3)   # -pi/3 ~ pi/3
-        cmd_y = min(max(delta_y, -np.pi/2), np.pi/2)  # -pi/2 ~ pi/2
-    
-        cmd_alpha = min(max(delta_roll, -np.pi * 0.45), np.pi * 0.45)
-        cmd_beta = min(max(delta_pitch, -1.5), 1.5)
-        cmd_gamma = min(max(delta_yaw, -1.4), 1.4)
+                env.plan(last_pitch_roll)
+                dog_obs = env.get_dog_observations()
+                actions_dog = dog_policy(dog_obs)
 
-        cmd_alpha, cmd_beta, cmd_gamma = rpy_to_abg(cmd_alpha, cmd_beta, cmd_gamma)
+            arm_action = torch.clamp(last_arm_actions[..., :-2], -clip_actions, clip_actions)
+            arm_action_plot = arm_action[0, :arm_count].detach().cpu()
+            arm_joint_target = default_arm + arm_action_plot * action_scale
+            if arm_plotter is not None:
+                arm_plotter.update(i, i * float(env.dt), arm_joint_target[:plot_joint_num].numpy())
 
-        print("commands: ", cmd_l, cmd_p, cmd_y, cmd_alpha, cmd_beta, cmd_gamma)
-        env.commands_arm[:, 0] = cmd_l
-        env.commands_arm[:, 1] = cmd_p
-        env.commands_arm[:, 2] = cmd_y
-        env.commands_arm[:, 3] = cmd_alpha
-        env.commands_arm[:, 4] = cmd_beta
-        env.commands_arm[:, 5] = cmd_gamma
-        
+            ret = env.step(actions_dog, arm_action)
+    finally:
+        # Best-effort cleanup on normal exit or Ctrl+C
+        try:
+            lcm_node.unsubscribe(vr_control_subscription)
+        except Exception:
+            pass
+        if arm_plotter is not None:
+            arm_plotter.close()
 
 
 def quat_apply(a, b):
@@ -265,7 +410,18 @@ if __name__ == '__main__':
     parser.add_argument('--sim_device', type=str, default="cuda:0")
     parser.add_argument('--logdir', type=str)
     parser.add_argument('--ckptid', type=int, default=40000)
+    parser.add_argument('--arm_kp', type=float, default=None, help='override arm stiffness (kp)')
+    parser.add_argument('--arm_kd', type=float, default=None, help='override arm damping (kd)')
+    parser.add_argument(
+        '--arm_joint_names',
+        type=str,
+        default="",
+        help='comma separated joint names to override, e.g. piper_joint1,piper_joint2',
+    )
+    parser.add_argument('--plot_arm_joints', action='store_true', default=False, help='realtime plot arm target joints')
+    parser.add_argument('--plot_num_joints', type=int, default=6, help='number of arm joints to plot')
+    parser.add_argument('--plot_history_s', type=float, default=10.0, help='history window length in seconds')
+    parser.add_argument('--plot_update_every', type=int, default=2, help='plot redraw interval in steps')
    
     args = parser.parse_args()
     play_go1(args)
-
