@@ -30,6 +30,14 @@ from go1_gym_learn.ppo_cse_automatic.arm_ac import ArmAC_Args
 from go1_gym.utils import format_code, set_seed, global_switch
 os.environ["WANDB_SILENT"] = "true"
 
+
+def _sanitize_run_segment(name):
+    if name is None:
+        return None
+    sanitized = str(name).strip().replace("\\", "_").replace("/", "_")
+    sanitized = sanitized.replace(" ", "_")
+    return sanitized or None
+
 def train_go1(arg):
     
     if args.debug:
@@ -91,9 +99,10 @@ def train_go1(arg):
     Cfg.rewards.use_terminal_body_height = True
     
     DogRunnerArgs.resume = args.resume
-    DogRunnerArgs.resume_path = 'your_dog_ckpt_path'
+    DogRunnerArgs.resume_path = '/home/sivan/whole_body/RoboDuet/runs/go2piper_roboduet/2026-04-02/auto_train/222921.623705_seed44/checkpoints_dog/ac_weights_002000.pt'
     ArmRunnerArgs.resume = args.resume
-    ArmRunnerArgs.resume_path = 'your_arm_ckpt_path'
+    ArmRunnerArgs.resume_path = '/home/sivan/whole_body/RoboDuet/runs/go2piper_roboduet/2026-04-02/auto_train/222921.623705_seed44/checkpoints_arm/ac_weights_002000.pt'
+    
     
     global_switch.pretrained_to_hybrid_start = 2000 if args.resume else 10000 # 2000 with pretrained, 10000 from scratch
     
@@ -128,6 +137,13 @@ def train_go1(arg):
     Cfg.hybrid.use_vision = False
     Cfg.rewards.manip_weight_lpy = 3
     Cfg.rewards.manip_weight_rpy = 1
+    Cfg.rewards.manip_weight_lpy_start = 4
+    Cfg.rewards.manip_weight_lpy_end = 3
+    Cfg.rewards.manip_weight_rpy_start = 0
+    Cfg.rewards.manip_weight_rpy_end = 1
+    Cfg.rewards.manip_weight_keep_sum_constant = True
+    Cfg.rewards.manip_weight_transition_iters = 5000
+    Cfg.rewards.manip_weight_transition_power = 1.0
     Cfg.hybrid.reward_scales.arm_dof_vel = 10 * Cfg.reward_scales.dof_vel
     Cfg.hybrid.reward_scales.arm_dof_acc = 10 * Cfg.reward_scales.dof_acc
     Cfg.hybrid.reward_scales.arm_action_rate = 10 * Cfg.reward_scales.action_rate
@@ -159,17 +175,18 @@ def train_go1(arg):
     
     now = datetime.now()
     stem = Path(__file__).stem
+    run_leaf = _sanitize_run_segment(args.exp_name) or now.strftime("%H%M%S.%f")
     wandb.init(
                project="dev",
                group=args.run_name,
                mode=mode,
                notes=args.notes,
-               name=f'{now.strftime("%Y-%m-%d")}/{stem}/{now.strftime("%H%M%S.%f")}',
+               name=f'{now.strftime("%Y-%m-%d")}/{stem}/{run_leaf}',
                tags=args.tags,
                dir=f"{MINI_GYM_ROOT_DIR}")
     
     args.log_dir = osp.join(f"{MINI_GYM_ROOT_DIR}/runs/{args.run_name}", wandb.run.name)
-    args.log_dir += f'_seed{args.seed}'
+    print(f"Log directory: {args.log_dir}")
     
     if not args.debug:
         os.makedirs(osp.join(args.log_dir, "checkpoints_arm"), exist_ok=True)
@@ -234,6 +251,12 @@ if __name__ == '__main__':
     parser.add_argument('--robot', type=str, default="go1", choices=["go1", "go2"])
     parser.add_argument('--wo_two_stage', action='store_true', default=False)
     parser.add_argument('--use_rot6d', action='store_true', default=False)
+    parser.add_argument(
+        '--exp_name',
+        type=str,
+        default=None,
+        help='custom final run directory name; default is timestamp',
+    )
 
     args = parser.parse_args()
     

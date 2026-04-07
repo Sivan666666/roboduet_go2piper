@@ -4,6 +4,88 @@ from params_proto import Meta
 
 from go1_gym.envs.automatic.legged_robot_config import Cfg
 
+ARM_STIFFNESS_ARM = {
+        # "zarx": 50,
+        # "zarx_j1": 40,
+        # "zarx_j2": 70,
+        # "zarx_j3": 70,
+        # "zarx_j4": 25,
+        # "zarx_j5": 25,
+        # "zarx_j6": 25,
+        # "zarx_j7": 50,
+        # "zarx_j8": 50,
+        # "zarx": 50,
+        # "piper_joint1": 40,
+        # "piper_joint2": 80,
+        # "piper_joint3": 80,
+        # "piper_joint4": 20,
+        # "piper_joint5": 80,
+        # "piper_joint6": 20,
+        # "piper_joint7": 20,
+        # "piper_joint8": 20,
+        'piper_joint1': 10,
+        'piper_joint2': 10,
+        'piper_joint3': 10,
+        'piper_joint4': 10,
+        'piper_joint5': 10,
+        'piper_joint6': 10,
+        'piper_joint7': 10,
+        'piper_joint8': 10
+}  # [N*m/rad]
+
+ARM_DAMPING_ARM = {
+        # "zarx": 20,
+        # "zarx_j1": 3,
+        # "zarx_j2": 15,
+        # "zarx_j3": 15,
+        # "zarx_j4": 2,
+        # "zarx_j5": 2,
+        # "zarx_j6": 2,
+        # "zarx_j7": 20,
+        # "zarx_j8": 20,
+        # "zarx": 20,
+        # "piper_joint1": 2,
+        # "piper_joint2": 4,
+        # "piper_joint3": 4,
+        # "piper_joint4": 0.5,
+        # "piper_joint5": 4,
+        # "piper_joint6": 0.5,
+        # "piper_joint7": 0.5,
+        # "piper_joint8": 0.5,
+        'piper_joint1': 1.5,
+        'piper_joint2': 1.5,
+        'piper_joint3': 1.5,
+        'piper_joint4': 1.5,
+        'piper_joint5': 1.5,
+        'piper_joint6': 1.5,
+        'piper_joint7': 1.5,
+        'piper_joint8': 1.5
+}  # [N*m*s/rad]
+
+ARM_COMMAND_SAFETY = {
+    "reject_invalid_targets": True,
+    "collision_lower_limits": [-0.38, -0.16, -0.3],
+    "collision_upper_limits": [0.3, 0.16, 0.10],
+    "underground_limit": -0.38,
+    "num_collision_check_samples": 10,
+    "resample_max_retries": 10,
+}
+
+
+def apply_arm_pd_from_asset_config(Cnfg: Union[Cfg, Meta]):
+    Cnfg.arm.control.stiffness_arm = dict(ARM_STIFFNESS_ARM)
+    Cnfg.arm.control.damping_arm = dict(ARM_DAMPING_ARM)
+
+
+def apply_arm_sampling_safety_from_asset_config(Cnfg: Union[Cfg, Meta]):
+    Cnfg.arm.commands.reject_invalid_targets = bool(ARM_COMMAND_SAFETY["reject_invalid_targets"])
+    Cnfg.arm.commands.collision_lower_limits = list(ARM_COMMAND_SAFETY["collision_lower_limits"])
+    Cnfg.arm.commands.collision_upper_limits = list(ARM_COMMAND_SAFETY["collision_upper_limits"])
+    Cnfg.arm.commands.underground_limit = float(ARM_COMMAND_SAFETY["underground_limit"])
+    Cnfg.arm.commands.num_collision_check_samples = int(ARM_COMMAND_SAFETY["num_collision_check_samples"])
+    Cnfg.arm.commands.resample_max_retries = int(ARM_COMMAND_SAFETY["resample_max_retries"])
+
+
 def config_asset(Cnfg: Union[Cfg, Meta]):
 
     Cnfg.asset.file = '{MINI_GYM_ROOT_DIR}/resources/robots/go2_piper/go2/urdf/go2piper.urdf'
@@ -22,46 +104,8 @@ def config_asset(Cnfg: Union[Cfg, Meta]):
     Cnfg.control.stiffness = {'joint': 40., 'widow': 5., "zarx": 5., "zarx_j3": 20. , "piper": 5.}  # [N*m/rad]
     
     
-    Cnfg.arm.control.stiffness_arm = {
-            # "zarx": 50,
-            # "zarx_j1": 40,
-            # "zarx_j2": 70,
-            # "zarx_j3": 70,
-            # "zarx_j4": 25,
-            # "zarx_j5": 25,
-            # "zarx_j6": 25,
-            # "zarx_j7": 50,
-            # "zarx_j8": 50,
-            # "zarx": 50,
-            "piper_joint1": 80,
-            "piper_joint2": 80,
-            "piper_joint3": 80,
-            "piper_joint4": 45,
-            "piper_joint5": 10,
-            "piper_joint6": 10,
-            "piper_joint7": 400,
-            "piper_joint8": 400,
-    }  # [N*m/rad]
-    Cnfg.arm.control.damping_arm = {
-            # "zarx": 20,
-            # "zarx_j1": 3,
-            # "zarx_j2": 15,
-            # "zarx_j3": 15,
-            # "zarx_j4": 2,
-            # "zarx_j5": 2,
-            # "zarx_j6": 2,
-            # "zarx_j7": 20,
-            # "zarx_j8": 20,
-            # "zarx": 20,
-            "piper_joint1": 5,
-            "piper_joint2": 5,
-            "piper_joint3": 5,
-            "piper_joint4": 5,
-            "piper_joint5": 1.5,
-            "piper_joint6": 1.5,
-            "piper_joint7": 5,
-            "piper_joint8": 5,
-    }  # [N*m*s/rad]
+    apply_arm_pd_from_asset_config(Cnfg)
+    apply_arm_sampling_safety_from_asset_config(Cnfg)
 
 
     Cnfg.dog.control.stiffness_leg = {'joint': 40.}  # [N*m/rad]

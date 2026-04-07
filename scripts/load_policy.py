@@ -3,8 +3,13 @@ from go1_gym_learn.ppo_cse_automatic.arm_ac import ArmActorCritic
 from go1_gym_learn.ppo_cse_automatic.dog_ac import DogActorCritic
 import os.path as osp
 import pickle as pkl
+from typing import Iterable, Optional
 from go1_gym.envs.automatic.legged_robot_config import Cfg
 from go1_gym.envs.automatic import HistoryWrapper
+from go1_gym.envs.go1.asset_config import (
+    apply_arm_pd_from_asset_config,
+    apply_arm_sampling_safety_from_asset_config,
+)
 
 def load_dog_policy(logdir, ckpt_id, Cfg):
     actor_critic = DogActorCritic(Cfg.dog.dog_num_observations,
@@ -17,7 +22,11 @@ def load_dog_policy(logdir, ckpt_id, Cfg):
         ckpt_id_ = ckpt_id + '_dog'
     else:
         ckpt_id_ = ckpt_id.zfill(6)
-    ckpt = torch.load(logdir + f'/checkpoints_dog/ac_weights_{str(ckpt_id_)}.pt', map_location=device)
+    ckpt = torch.load(
+        logdir + f'/checkpoints_dog/ac_weights_{str(ckpt_id_)}.pt',
+        map_location=device,
+        weights_only=True,
+    )
     # for key, value in ckpt.items():
     #     print(key, value.shape)
     actor_critic.load_state_dict(ckpt)
@@ -49,7 +58,11 @@ def load_arm_policy(logdir, ckpt_id, Cfg):
         ckpt_id_ = ckpt_id +'_arm'
     else:
         ckpt_id_ = ckpt_id.zfill(6)
-    ckpt = torch.load(logdir + f'/checkpoints_arm/ac_weights_{str(ckpt_id_)}.pt', map_location=device)
+    ckpt = torch.load(
+        logdir + f'/checkpoints_arm/ac_weights_{str(ckpt_id_)}.pt',
+        map_location=device,
+        weights_only=True,
+    )
     actor_critic.load_state_dict(ckpt)
     
     actor_critic.eval()
@@ -66,7 +79,45 @@ def load_arm_policy(logdir, ckpt_id, Cfg):
 
     return policy
 
-def load_env(logdir, wrapper, headless=False, device='cuda:0'):
+def _override_arm_pd_gains(
+    Cfg,
+    arm_kp: Optional[float] = None,
+    arm_kd: Optional[float] = None,
+    arm_joint_names: Optional[Iterable[str]] = None,
+):
+    if arm_kp is None and arm_kd is None:
+        return
+
+    if arm_joint_names is None:
+        joint_names = sorted(
+            set(list(Cfg.arm.control.stiffness_arm.keys()) + list(Cfg.arm.control.damping_arm.keys()))
+        )
+    else:
+        joint_names = list(arm_joint_names)
+
+    for name in joint_names:
+        if arm_kp is not None:
+            Cfg.arm.control.stiffness_arm[name] = float(arm_kp)
+        if arm_kd is not None:
+            Cfg.arm.control.damping_arm[name] = float(arm_kd)
+
+    print(
+        f"[load_env] override arm PD gains for joints={joint_names}, "
+        f"kp={arm_kp if arm_kp is not None else 'keep'}, "
+        f"kd={arm_kd if arm_kd is not None else 'keep'}"
+    )
+
+
+def load_env(
+    logdir,
+    wrapper,
+    headless=False,
+    device='cuda:0',
+    apply_asset_config_override: bool = False,
+    arm_kp: Optional[float] = None,
+    arm_kd: Optional[float] = None,
+    arm_joint_names: Optional[Iterable[str]] = None,
+):
     print('*'*10, logdir)
 
     with open(logdir + "/parameters.pkl", 'rb') as file:
@@ -95,6 +146,7 @@ def load_env(logdir, wrapper, headless=False, device='cuda:0'):
       Cfg.terrain.teleport_robots = False
 
     # turn off DR for evaluation script
+    Cfg.use_rot6d = False
     Cfg.domain_rand.push_robots = False
     Cfg.domain_rand.randomize_friction = False
     Cfg.domain_rand.randomize_gravity = False
@@ -125,15 +177,37 @@ def load_env(logdir, wrapper, headless=False, device='cuda:0'):
     # Cfg.domain_rand.lag_timesteps = 6
     # Cfg.domain_rand.randomize_lag_timesteps = True
     # Cfg.control.control_type = "actuator_net"
-    Cfg.rewards.use_terminal_body_height = False
-    Cfg.rewards.use_terminal_roll = False
-    Cfg.rewards.use_terminal_pitch = False
-    Cfg.hybrid.rewards.use_terminal_body_height = False
-    Cfg.hybrid.rewards.use_terminal_roll = False
-    Cfg.hybrid.rewards.use_terminal_pitch = False
+    Cfg.rewards.use_terminal_body_height = True
+    Cfg.rewards.use_terminal_roll = True
+    Cfg.rewards.use_terminal_pitch = True
+    Cfg.hybrid.rewards.use_terminal_body_height = True
+    Cfg.hybrid.rewards.use_terminal_roll = True
+    Cfg.hybrid.rewards.use_terminal_pitch = True
     Cfg.arm.commands.T_traj = [20000, 30000]
     # Cfg.sim.physx["num_position_iterations"] = 8
     # Cfg.sim.physx["num_velocity_iterations"] = 8
+
+    # Optional: let local asset_config.py override arm PD gains.
+    # Useful for play-time tuning without touching logdir files.
+    if apply_asset_config_override:
+        apply_arm_pd_from_asset_config(Cfg)
+        apply_arm_sampling_safety_from_asset_config(Cfg)
+        print("[load_env] applied arm PD + arm sampling safety override from local asset_config.py")
+        print(
+            "[load_env] arm collision box active: "
+            f"lower={Cfg.arm.commands.collision_lower_limits}, "
+            f"upper={Cfg.arm.commands.collision_upper_limits}, "
+            f"underground={Cfg.arm.commands.underground_limit}"
+        )
+
+    # Optional runtime override for arm PD gains in play/eval.
+    # This happens after loading parameters.pkl and before creating env.
+    _override_arm_pd_gains(
+        Cfg,
+        arm_kp=arm_kp,
+        arm_kd=arm_kd,
+        arm_joint_names=arm_joint_names,
+    )
     
 
     env = wrapper(sim_device=device, headless=headless, cfg=Cfg)

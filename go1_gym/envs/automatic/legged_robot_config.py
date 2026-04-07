@@ -51,12 +51,36 @@ class Cfg(PrefixProto, cli=False):
         class commands(PrefixProto, cli=False):
             angle75 = torch.deg2rad(torch.tensor(75))
             angle60 = torch.deg2rad(torch.tensor(60))
-            l = [0.3, 0.77]
+            angle20 = torch.deg2rad(torch.tensor(20))
+            angle25 = torch.deg2rad(torch.tensor(25))
+            l = [0.3, 0.7]
             p = [-torch.pi*0.45 , torch.pi*0.45]  # 75 
             y = [-torch.pi/2 , torch.pi/2]
             roll_ee = [-torch.pi * 0.45, torch.pi * 0.45]
             pitch_ee = [-angle60 , angle60]
             yaw_ee = [-angle75 , angle75]
+
+            # Max command delta per arm target resample. Set <= 0 to disable.
+            max_delta_l = 0.08
+            max_delta_p = angle20
+            max_delta_y = angle20
+            max_delta_roll_ee = angle20
+            max_delta_pitch_ee = angle20
+            max_delta_yaw_ee = angle25
+
+            # Grow delta limits with arm-stage iterations until full command range.
+            delta_curriculum_start_iter = 0
+            delta_curriculum_end_iter = 10000
+            delta_curriculum_power = 1.0
+
+            # Reject unreasonable arm target trajectories (collision / underground),
+            # following the unifp go2 sampling safety logic.
+            reject_invalid_targets = True
+            collision_lower_limits = [-0.38, -0.16, -0.3]  # local xyz box min
+            collision_upper_limits = [0.3, 0.16, 0.10]     # local xyz box max
+            underground_limit = -0.38                        # local z lower bound
+            num_collision_check_samples = 10
+            resample_max_retries = 10
             
             T_traj = [2, 3.]
             T_force_range = [1, 4.]
@@ -376,6 +400,17 @@ class Cfg(PrefixProto, cli=False):
         gait_force_sigma = 50.
         gait_vel_sigma = 0.5
         footswing_height = 0.09
+
+        # Arm manipulation reward weights curriculum
+        manip_weight_lpy = 3.0
+        manip_weight_rpy = 1.0
+        manip_weight_lpy_start = 4.0
+        manip_weight_lpy_end = 4.0
+        manip_weight_rpy_start = 0.0
+        manip_weight_rpy_end = 0.0
+        manip_weight_keep_sum_constant = False
+        manip_weight_transition_iters = 0
+        manip_weight_transition_power = 1.0
 
     class reward_scales(ParamsProto, cli=False):
         termination = -0.0

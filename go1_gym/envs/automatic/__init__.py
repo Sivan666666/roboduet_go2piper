@@ -532,6 +532,9 @@ class KeyboardWrapper(VelocityTrackingEasyEnv):
         else:
             self.gym.poll_viewer_events(self.viewer)
 
+        # Update command buffers before drawing so the marker reflects current command.
+        self.update_arm_commands()
+
         # render desired spheres
         # import ipdb; ipdb.set_trace()
         if self.cfg.asset.render_sphere:
@@ -539,8 +542,7 @@ class KeyboardWrapper(VelocityTrackingEasyEnv):
             self._draw_ee_ori_coord()
             self._draw_command_ori_coord()
             self._draw_base_ori_coord()
-    
-        self.update_arm_commands()
+            self._draw_arm_collision_bbox()
 
     def update_arm_commands(self):
         

@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from go1_gym.utils.math_utils import quat_apply_yaw, wrap_to_pi, get_scale_shift
+from go1_gym.utils.global_switch import global_switch
 from isaacgym.torch_utils import *
 from isaacgym import gymapi
 from go1_gym.envs.automatic.legged_robot import LeggedRobot
@@ -64,13 +65,38 @@ class Rewards:
         return torch.sum(torch.square(self.env.last_actions - self.env.actions)[..., self.env.num_actions_loco:], dim=1)
 
     def _reward_arm_manip_commands_tracking_combine(self):
+           
         lpy = self.env.get_lpy_in_base_coord(torch.arange(self.env.num_envs, device=self.env.device))
         lpy_error = torch.sum((torch.abs(lpy - self.env.commands_arm_obs[:, 0:3])) / self.env.commands_arm_lpy_range, dim=1)
         
         rpy = self.env.get_alpha_beta_gamma_in_base_coord(torch.arange(self.env.num_envs, device=self.env.device))
         rpy_error = torch.sum((torch.abs(rpy - self.env.target_abg)) / self.env.commands_arm_rpy_range, dim=1)
     
-        return torch.exp(-(self.env.cfg.rewards.manip_weight_lpy*lpy_error + self.env.cfg.rewards.manip_weight_rpy*rpy_error))
+        cfg = self.env.cfg.rewards
+        lpy_start = float(getattr(cfg, "manip_weight_lpy_start", cfg.manip_weight_lpy))
+        lpy_end = float(getattr(cfg, "manip_weight_lpy_end", cfg.manip_weight_lpy))
+        rpy_start = float(getattr(cfg, "manip_weight_rpy_start", cfg.manip_weight_rpy))
+        rpy_end = float(getattr(cfg, "manip_weight_rpy_end", cfg.manip_weight_rpy))
+
+        arm_stage_iter = max(0, global_switch.count - global_switch.pretrained_to_hybrid_start)
+        transition_iters = int(getattr(cfg, "manip_weight_transition_iters", 0))
+        if transition_iters <= 0:
+            alpha = 1.0
+        else:
+            alpha = max(0.0, min(1.0, arm_stage_iter / float(transition_iters)))
+            power = float(getattr(cfg, "manip_weight_transition_power", 1.0))
+            if power <= 0:
+                power = 1.0
+            alpha = alpha ** power
+
+        manip_weight_lpy = lpy_start + (lpy_end - lpy_start) * alpha
+        if getattr(cfg, "manip_weight_keep_sum_constant", False):
+            total_weight = lpy_start + rpy_start
+            manip_weight_rpy = total_weight - manip_weight_lpy
+        else:
+            manip_weight_rpy = rpy_start + (rpy_end - rpy_start) * alpha
+        # print(torch.exp(-(manip_weight_lpy * lpy_error + manip_weight_rpy * rpy_error)))
+        return torch.exp(-(manip_weight_lpy * lpy_error + manip_weight_rpy * rpy_error))
 
     def _reward_arm_action_smoothness_1(self):
         # Penalize changes in actions

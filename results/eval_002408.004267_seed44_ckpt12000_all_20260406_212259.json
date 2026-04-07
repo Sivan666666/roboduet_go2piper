@@ -1,0 +1,130 @@
+{
+  "logdir": "/home/sivan/whole_body/RoboDuet/runs/go2piper_roboduet/2026-04-02/auto_train/002408.004267_seed44",
+  "checkpoint": "12000",
+  "seed": 0,
+  "num_trials": 5,
+  "dt": 0.019999999552965164,
+  "settle_seconds": 4.0,
+  "settle_steps": 200,
+  "metric_seconds": 2.0,
+  "metric_steps": 100,
+  "scenarios": {
+    "arm_only": {
+      "scenario": "arm_only",
+      "num_trials": 5,
+      "settle_steps": 200,
+      "metric_steps": 100,
+      "trial_survival_rate": 0.6,
+      "step_survival_rate": 0.6413333333333333,
+      "metric_coverage_rate": 0.6,
+      "reset_count": 2,
+      "arm_tracking": {
+        "lpy_error": {
+          "mean_abs": [
+            0.007361354772001505,
+            0.3337410092353821,
+            0.13311301171779633
+          ]
+        },
+        "rpy_error": {
+          "mean_abs": [
+            0.43337148427963257,
+            0.49913522601127625,
+            1.0550943613052368
+          ]
+        }
+      },
+      "base_tracking": {
+        "lin_vel_error_xy": {
+          "mean_abs": [
+            0.0003370000922586769,
+            0.00031044185743667185
+          ]
+        },
+        "yaw_vel_error": {
+          "mean_abs": [
+            0.002270631492137909
+          ]
+        }
+      }
+    },
+    "base_only": {
+      "scenario": "base_only",
+      "num_trials": 5,
+      "settle_steps": 200,
+      "metric_steps": 100,
+      "trial_survival_rate": 1.0,
+      "step_survival_rate": 1.0,
+      "metric_coverage_rate": 1.0,
+      "reset_count": 0,
+      "arm_tracking": {
+        "lpy_error": {
+          "mean_abs": [
+            0.006764870136976242,
+            0.6520890593528748,
+            0.022167367860674858
+          ]
+        },
+        "rpy_error": {
+          "mean_abs": [
+            0.2746945321559906,
+            0.09537329524755478,
+            0.08923541009426117
+          ]
+        }
+      },
+      "base_tracking": {
+        "lin_vel_error_xy": {
+          "mean_abs": [
+            0.0628122016787529,
+            0.06141676753759384
+          ]
+        },
+        "yaw_vel_error": {
+          "mean_abs": [
+            0.47105392813682556
+          ]
+        }
+      }
+    },
+    "whole_body": {
+      "scenario": "whole_body",
+      "num_trials": 5,
+      "settle_steps": 200,
+      "metric_steps": 100,
+      "trial_survival_rate": 1.0,
+      "step_survival_rate": 1.0,
+      "metric_coverage_rate": 1.0,
+      "reset_count": 0,
+      "arm_tracking": {
+        "lpy_error": {
+          "mean_abs": [
+            0.010267546400427818,
+            0.20936915278434753,
+            0.06305601447820663
+          ]
+        },
+        "rpy_error": {
+          "mean_abs": [
+            1.1399052143096924,
+            1.3085304498672485,
+            1.315056562423706
+          ]
+        }
+      },
+      "base_tracking": {
+        "lin_vel_error_xy": {
+          "mean_abs": [
+            0.04929431900382042,
+            0.11859636008739471
+          ]
+        },
+        "yaw_vel_error": {
+          "mean_abs": [
+            0.5136446952819824
+          ]
+        }
+      }
+    }
+  }
+}

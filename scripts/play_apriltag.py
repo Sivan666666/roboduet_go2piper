@@ -1,4 +1,5 @@
 import time
+import argparse
 
 import isaacgym
 
@@ -25,13 +26,30 @@ x_vel_cmd, y_vel_cmd, yaw_vel_cmd = 0., 0.0, 0
 l_cmd, p_cmd, y_cmd = 0.5, 0.2, 0.
 roll_cmd, pitch_cmd, yaw_cmd = np.pi/4, np.pi/4, np.pi/4
 
-def play_go1(headless=True):
-    global x_vel_cmd, y_vel_cmd, yaw_vel_cmd, l_cmd, p_cmd, y_cmd, roll_cmd, pitch_cmd, yaw_cmd
+def play_go1(args):
+    global x_vel_cmd, y_vel_cmd, yaw_vel_cmd, l_cmd, p_cmd, y_cmd, roll_cmd, pitch_cmd, yaw_cmd, logdir, ckpt_id
    
     from go1_gym.utils.global_switch import global_switch
     global_switch.open_switch()
+
+    if args.logdir:
+        logdir = args.logdir
+    ckpt_id = str(args.ckptid).zfill(6)
     
-    env, cfg = load_env(logdir, wrapper=KeyboardWrapper, headless=headless)
+    arm_joint_names = None
+    if args.arm_joint_names:
+        arm_joint_names = [x.strip() for x in args.arm_joint_names.split(",") if x.strip()]
+
+    env, cfg = load_env(
+        logdir,
+        wrapper=KeyboardWrapper,
+        headless=args.headless,
+        device=args.sim_device,
+        apply_asset_config_override=True,
+        arm_kp=args.arm_kp,
+        arm_kd=args.arm_kd,
+        arm_joint_names=arm_joint_names,
+    )
     dog_policy = load_dog_policy(logdir, ckpt_id, cfg)
     arm_policy = load_arm_policy(logdir, ckpt_id, cfg)
     
@@ -102,6 +120,18 @@ def play_go1(headless=True):
 
 
 if __name__ == '__main__':
-    # to see the environment rendering, set headless=False
-    play_go1(headless=False)
-
+    parser = argparse.ArgumentParser(description="Go1 AprilTag Play")
+    parser.add_argument('--headless', action='store_true', default=False)
+    parser.add_argument('--sim_device', type=str, default="cuda:0")
+    parser.add_argument('--logdir', type=str, default=logdir)
+    parser.add_argument('--ckptid', type=int, default=40000)
+    parser.add_argument('--arm_kp', type=float, default=None, help='override arm stiffness (kp)')
+    parser.add_argument('--arm_kd', type=float, default=None, help='override arm damping (kd)')
+    parser.add_argument(
+        '--arm_joint_names',
+        type=str,
+        default="",
+        help='comma separated joint names to override, e.g. piper_joint1,piper_joint2',
+    )
+    args = parser.parse_args()
+    play_go1(args)
