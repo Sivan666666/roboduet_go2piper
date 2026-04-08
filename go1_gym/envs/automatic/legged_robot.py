@@ -969,9 +969,61 @@ class LeggedRobot(BaseTask):
         if not global_switch.switch_open: return
         
         # position
-        self.commands_arm[env_ids, 0] = torch_rand_float(self.cfg.arm.commands.l[0], self.cfg.arm.commands.l[1], (env_ids.shape[0], 1), device=self.device).squeeze()
-        self.commands_arm[env_ids, 1] = torch_rand_float(self.cfg.arm.commands.p[0], self.cfg.arm.commands.p[1], (env_ids.shape[0], 1), device=self.device).squeeze()
-        self.commands_arm[env_ids, 2] = torch_rand_float(self.cfg.arm.commands.y[0], self.cfg.arm.commands.y[1], (env_ids.shape[0], 1), device=self.device).squeeze()
+        # Keep the previous target as a fallback. If repeated resampling still
+        # fails collision checking, we leave that env's target unchanged.
+        previous_lpy = self.commands_arm[env_ids, 0:3].clone()
+        next_lpy = previous_lpy.clone()
+
+        reject_invalid_targets = bool(getattr(self.cfg.arm.commands, "reject_invalid_targets", True))
+        max_retries = max(1, int(getattr(self.cfg.arm.commands, "resample_max_retries", 10)))
+        # Local indices inside this env_ids batch that still need a valid target.
+        pending_local_ids = torch.arange(len(env_ids), device=self.device, dtype=torch.long)
+
+        for _ in range(max_retries):
+            if len(pending_local_ids) == 0:
+                break
+
+            # Only resample the envs that failed collision checking last round.
+            num_pending = len(pending_local_ids)
+            sampled_l = torch_rand_float(
+                self.cfg.arm.commands.l[0],
+                self.cfg.arm.commands.l[1],
+                (num_pending, 1),
+                device=self.device,
+            ).squeeze(1)
+            sampled_p = torch_rand_float(
+                self.cfg.arm.commands.p[0],
+                self.cfg.arm.commands.p[1],
+                (num_pending, 1),
+                device=self.device,
+            ).squeeze(1)
+            sampled_y = torch_rand_float(
+                self.cfg.arm.commands.y[0],
+                self.cfg.arm.commands.y[1],
+                (num_pending, 1),
+                device=self.device,
+            ).squeeze(1)
+
+            # Candidate end-effector targets for the currently pending envs.
+            candidate_lpy = torch.stack([sampled_l, sampled_p, sampled_y], dim=-1)
+
+            if reject_invalid_targets:
+                invalid_mask = self._arm_target_collision_mask(
+                    previous_lpy[pending_local_ids],
+                    candidate_lpy,
+                )
+            else:
+                invalid_mask = torch.zeros(num_pending, dtype=torch.bool, device=self.device)
+
+            valid_mask = ~invalid_mask
+            if torch.any(valid_mask):
+                accepted_local = pending_local_ids[valid_mask]
+                next_lpy[accepted_local] = candidate_lpy[valid_mask]
+
+            # Keep retrying only for envs whose sampled target is still invalid.
+            pending_local_ids = pending_local_ids[invalid_mask]
+
+        self.commands_arm[env_ids, 0:3] = next_lpy
         
         self.commands_arm_obs[env_ids, 0] = self.commands_arm[env_ids, 0]
         self.commands_arm_obs[env_ids, 1] = self.commands_arm[env_ids, 1]
