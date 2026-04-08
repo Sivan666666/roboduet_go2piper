@@ -38,6 +38,15 @@ def _sanitize_run_segment(name):
     sanitized = sanitized.replace(" ", "_")
     return sanitized or None
 
+
+def _resolve_cli_or_env(cli_value, env_key, default=None):
+    if cli_value is not None and str(cli_value).strip() != "":
+        return str(cli_value).strip()
+    env_value = os.environ.get(env_key)
+    if env_value is not None and str(env_value).strip() != "":
+        return str(env_value).strip()
+    return default
+
 def train_go1(arg):
     
     if args.debug:
@@ -176,14 +185,23 @@ def train_go1(arg):
     now = datetime.now()
     stem = Path(__file__).stem
     run_leaf = _sanitize_run_segment(args.exp_name) or now.strftime("%H%M%S.%f")
+    wandb_entity = _resolve_cli_or_env(args.wandb_entity, "WANDB_ENTITY")
+    wandb_project = _resolve_cli_or_env(args.wandb_project, "WANDB_PROJECT", default="dev")
+    wandb_dir = _resolve_cli_or_env(args.wandb_dir, "WANDB_DIR", default=f"{MINI_GYM_ROOT_DIR}")
+    wandb_mode = _resolve_cli_or_env(args.wandb_mode, "WANDB_MODE", default=mode)
+    print(
+        f"W&B target: entity={wandb_entity or '<login-default>'}, "
+        f"project={wandb_project}, mode={wandb_mode}, dir={wandb_dir}"
+    )
     wandb.init(
-               project="dev",
+               entity=wandb_entity,
+               project=wandb_project,
                group=args.run_name,
-               mode=mode,
+               mode=wandb_mode,
                notes=args.notes,
-               name=f'{now.strftime("%Y-%m-%d")}/{stem}/{run_leaf}',
+               name=f'{now.strftime("%Y-%m-%d")}/{run_leaf}',
                tags=args.tags,
-               dir=f"{MINI_GYM_ROOT_DIR}")
+               dir=wandb_dir)
     
     args.log_dir = osp.join(f"{MINI_GYM_ROOT_DIR}/runs/{args.run_name}", wandb.run.name)
     print(f"Log directory: {args.log_dir}")
@@ -234,7 +252,7 @@ def train_go1(arg):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Go1")
+    parser = argparse.ArgumentParser(description="Go2")
     parser.add_argument('--headless', action='store_true', default=False)
     parser.add_argument('--sim_device', type=str, default="cuda:0")
     parser.add_argument('--num_learning_iterations', type=int, default=100000)
@@ -248,7 +266,7 @@ if __name__ == '__main__':
     parser.add_argument('--tags', nargs='+', default=[])
     parser.add_argument('--notes', type=str, default=None)
     parser.add_argument('--seed', type=int, default=-1)
-    parser.add_argument('--robot', type=str, default="go1", choices=["go1", "go2"])
+    parser.add_argument('--robot', type=str, default="go2", choices=["go1", "go2"])
     parser.add_argument('--wo_two_stage', action='store_true', default=False)
     parser.add_argument('--use_rot6d', action='store_true', default=False)
     parser.add_argument(
@@ -257,6 +275,10 @@ if __name__ == '__main__':
         default=None,
         help='custom final run directory name; default is timestamp',
     )
+    parser.add_argument('--wandb_entity', type=str, default=None, help='W&B account/team name')
+    parser.add_argument('--wandb_project', type=str, default=None, help='W&B project name')
+    parser.add_argument('--wandb_dir', type=str, default=None, help='W&B local metadata directory')
+    parser.add_argument('--wandb_mode', type=str, default=None, choices=['online', 'offline', 'disabled'])
 
     args = parser.parse_args()
     

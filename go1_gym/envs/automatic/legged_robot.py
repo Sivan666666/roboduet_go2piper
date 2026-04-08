@@ -931,6 +931,9 @@ class LeggedRobot(BaseTask):
         return collision_mask | underground_mask
 
     def _get_delta_curriculum_ratio(self):
+        if not bool(getattr(self.cfg.arm.commands, "use_delta_curriculum", True)):
+            return 1.0
+
         arm_stage_iter = max(0, global_switch.count - global_switch.pretrained_to_hybrid_start)
         start_iter = int(self.cfg.arm.commands.delta_curriculum_start_iter)
         end_iter = int(self.cfg.arm.commands.delta_curriculum_end_iter)
@@ -946,6 +949,9 @@ class LeggedRobot(BaseTask):
         return progress ** power
 
     def _get_curriculum_delta_limit(self, base_delta, low, high):
+        if not bool(getattr(self.cfg.arm.commands, "use_delta_curriculum", True)):
+            return 0.0
+
         base_delta = float(base_delta)
         if base_delta <= 0:
             return base_delta
@@ -963,108 +969,18 @@ class LeggedRobot(BaseTask):
         if not global_switch.switch_open: return
         
         # position
-        delta_l = self._get_curriculum_delta_limit(self.cfg.arm.commands.max_delta_l, self.cfg.arm.commands.l[0], self.cfg.arm.commands.l[1])
-        delta_p = self._get_curriculum_delta_limit(self.cfg.arm.commands.max_delta_p, self.cfg.arm.commands.p[0], self.cfg.arm.commands.p[1])
-        delta_y = self._get_curriculum_delta_limit(self.cfg.arm.commands.max_delta_y, self.cfg.arm.commands.y[0], self.cfg.arm.commands.y[1])
-        previous_lpy = self.commands_arm[env_ids, 0:3].clone()
-        next_lpy = previous_lpy.clone()
-
-        reject_invalid_targets = bool(getattr(self.cfg.arm.commands, "reject_invalid_targets", True))
-        max_retries = max(1, int(getattr(self.cfg.arm.commands, "resample_max_retries", 10)))
-        pending_local_ids = torch.arange(len(env_ids), device=self.device, dtype=torch.long)
-
-        for _ in range(max_retries):
-            if len(pending_local_ids) == 0:
-                break
-
-            num_pending = len(pending_local_ids)
-            sampled_l = torch_rand_float(self.cfg.arm.commands.l[0], self.cfg.arm.commands.l[1], (num_pending, 1), device=self.device).squeeze(1)
-            sampled_p = torch_rand_float(self.cfg.arm.commands.p[0], self.cfg.arm.commands.p[1], (num_pending, 1), device=self.device).squeeze(1)
-            sampled_y = torch_rand_float(self.cfg.arm.commands.y[0], self.cfg.arm.commands.y[1], (num_pending, 1), device=self.device).squeeze(1)
-
-            prev_l = previous_lpy[pending_local_ids, 0]
-            prev_p = previous_lpy[pending_local_ids, 1]
-            prev_y = previous_lpy[pending_local_ids, 2]
-
-            cand_l = self._apply_resample_delta_limit(
-                previous=prev_l,
-                sampled=sampled_l,
-                low=self.cfg.arm.commands.l[0],
-                high=self.cfg.arm.commands.l[1],
-                max_delta=delta_l,
-                angle_like=False,
-            )
-            cand_p = self._apply_resample_delta_limit(
-                previous=prev_p,
-                sampled=sampled_p,
-                low=self.cfg.arm.commands.p[0],
-                high=self.cfg.arm.commands.p[1],
-                max_delta=delta_p,
-                angle_like=True,
-            )
-            cand_y = self._apply_resample_delta_limit(
-                previous=prev_y,
-                sampled=sampled_y,
-                low=self.cfg.arm.commands.y[0],
-                high=self.cfg.arm.commands.y[1],
-                max_delta=delta_y,
-                angle_like=True,
-            )
-            candidate_lpy = torch.stack([cand_l, cand_p, cand_y], dim=-1)
-
-            if reject_invalid_targets:
-                invalid_mask = self._arm_target_collision_mask(previous_lpy[pending_local_ids], candidate_lpy)
-            else:
-                invalid_mask = torch.zeros(num_pending, dtype=torch.bool, device=self.device)
-
-            valid_mask = ~invalid_mask
-            if torch.any(valid_mask):
-                accepted_local = pending_local_ids[valid_mask]
-                next_lpy[accepted_local] = candidate_lpy[valid_mask]
-            pending_local_ids = pending_local_ids[invalid_mask]
-
-        self.commands_arm[env_ids, 0:3] = next_lpy
+        self.commands_arm[env_ids, 0] = torch_rand_float(self.cfg.arm.commands.l[0], self.cfg.arm.commands.l[1], (env_ids.shape[0], 1), device=self.device).squeeze()
+        self.commands_arm[env_ids, 1] = torch_rand_float(self.cfg.arm.commands.p[0], self.cfg.arm.commands.p[1], (env_ids.shape[0], 1), device=self.device).squeeze()
+        self.commands_arm[env_ids, 2] = torch_rand_float(self.cfg.arm.commands.y[0], self.cfg.arm.commands.y[1], (env_ids.shape[0], 1), device=self.device).squeeze()
         
         self.commands_arm_obs[env_ids, 0] = self.commands_arm[env_ids, 0]
         self.commands_arm_obs[env_ids, 1] = self.commands_arm[env_ids, 1]
         self.commands_arm_obs[env_ids, 2] = self.commands_arm[env_ids, 2]
         
         # orientation
-        sampled_roll = torch_rand_float(self.cfg.arm.commands.roll_ee[0], self.cfg.arm.commands.roll_ee[1], (env_ids.shape[0], 1), device=self.device).squeeze()
-        sampled_pitch = torch_rand_float(self.cfg.arm.commands.pitch_ee[0], self.cfg.arm.commands.pitch_ee[1], (env_ids.shape[0], 1), device=self.device).squeeze()
-        sampled_yaw = torch_rand_float(self.cfg.arm.commands.yaw_ee[0], self.cfg.arm.commands.yaw_ee[1], (env_ids.shape[0], 1), device=self.device).squeeze()
-        delta_roll = self._get_curriculum_delta_limit(self.cfg.arm.commands.max_delta_roll_ee, self.cfg.arm.commands.roll_ee[0], self.cfg.arm.commands.roll_ee[1])
-        delta_pitch = self._get_curriculum_delta_limit(self.cfg.arm.commands.max_delta_pitch_ee, self.cfg.arm.commands.pitch_ee[0], self.cfg.arm.commands.pitch_ee[1])
-        delta_yaw = self._get_curriculum_delta_limit(self.cfg.arm.commands.max_delta_yaw_ee, self.cfg.arm.commands.yaw_ee[0], self.cfg.arm.commands.yaw_ee[1])
-
-        roll = self._apply_resample_delta_limit(
-            previous=self.visual_rpy[env_ids, 0],
-            sampled=sampled_roll,
-            low=self.cfg.arm.commands.roll_ee[0],
-            high=self.cfg.arm.commands.roll_ee[1],
-            max_delta=delta_roll,
-            angle_like=True,
-        )
-        pitch = self._apply_resample_delta_limit(
-            previous=self.visual_rpy[env_ids, 1],
-            sampled=sampled_pitch,
-            low=self.cfg.arm.commands.pitch_ee[0],
-            high=self.cfg.arm.commands.pitch_ee[1],
-            max_delta=delta_pitch,
-            angle_like=True,
-        )
-        yaw = self._apply_resample_delta_limit(
-            previous=self.visual_rpy[env_ids, 2],
-            sampled=sampled_yaw,
-            low=self.cfg.arm.commands.yaw_ee[0],
-            high=self.cfg.arm.commands.yaw_ee[1],
-            max_delta=delta_yaw,
-            angle_like=True,
-        )
-
-        self.commands_arm[env_ids, 3] = roll
-        self.commands_arm[env_ids, 4] = pitch
-        self.commands_arm[env_ids, 5] = yaw
+        roll = torch_rand_float(self.cfg.arm.commands.roll_ee[0], self.cfg.arm.commands.roll_ee[1], (env_ids.shape[0], 1), device=self.device).squeeze()
+        pitch = torch_rand_float(self.cfg.arm.commands.pitch_ee[0], self.cfg.arm.commands.pitch_ee[1], (env_ids.shape[0], 1), device=self.device).squeeze()
+        yaw = torch_rand_float(self.cfg.arm.commands.yaw_ee[0], self.cfg.arm.commands.yaw_ee[1], (env_ids.shape[0], 1), device=self.device).squeeze()
         
         zero_vec = torch.zeros_like(roll)
         q1 = quat_from_euler_xyz(zero_vec, zero_vec, yaw)

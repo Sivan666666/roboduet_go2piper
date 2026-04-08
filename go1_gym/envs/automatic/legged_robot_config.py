@@ -60,6 +60,9 @@ class Cfg(PrefixProto, cli=False):
             pitch_ee = [-angle60 , angle60]
             yaw_ee = [-angle75 , angle75]
 
+            # Toggle arm command delta curriculum / step-size limiting during resample.
+            use_delta_curriculum = False
+
             # Max command delta per arm target resample. Set <= 0 to disable.
             max_delta_l = 0.08
             max_delta_p = angle20

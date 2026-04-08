@@ -28,6 +28,16 @@ from go1_gym_learn.ppo_cse_unified.unified2head_ac import Unified2AC_Args
 from go1_gym.utils import format_code, set_seed, global_switch
 os.environ["WANDB_SILENT"] = "true"
 
+
+def _resolve_cli_or_env(cli_value, env_key, default=None):
+    if cli_value is not None and str(cli_value).strip() != "":
+        return str(cli_value).strip()
+    env_value = os.environ.get(env_key)
+    if env_value is not None and str(env_value).strip() != "":
+        return str(env_value).strip()
+    return default
+
+
 def unified_reward_scales_wrapper(self):
     def get_reward_scales():
         return self.hybrid_reward_scales
@@ -157,14 +167,22 @@ def train_go1(headless=True):
         UnifiedRunnerArgs.log_video = False
     now = datetime.now()
     stem = Path(__file__).stem
-    wandb.init(entity="RoboDuet",
-               project="dev",
+    wandb_entity = _resolve_cli_or_env(getattr(args, "wandb_entity", None), "WANDB_ENTITY")
+    wandb_project = _resolve_cli_or_env(getattr(args, "wandb_project", None), "WANDB_PROJECT", default="dev")
+    wandb_dir = _resolve_cli_or_env(getattr(args, "wandb_dir", None), "WANDB_DIR", default=f"{MINI_GYM_ROOT_DIR}")
+    wandb_mode = _resolve_cli_or_env(getattr(args, "wandb_mode", None), "WANDB_MODE", default=mode)
+    print(
+        f"W&B target: entity={wandb_entity or '<login-default>'}, "
+        f"project={wandb_project}, mode={wandb_mode}, dir={wandb_dir}"
+    )
+    wandb.init(entity=wandb_entity,
+               project=wandb_project,
                group=args.run_name,
-               mode=mode,
+               mode=wandb_mode,
                notes=args.notes,
                name=f'{now.strftime("%Y-%m-%d")}/{stem}/{now.strftime("%H%M%S.%f")}',
                tags=args.tags,
-               dir=f"{MINI_GYM_ROOT_DIR}")
+               dir=wandb_dir)
     
     args.log_dir = osp.join(f"{MINI_GYM_ROOT_DIR}/runs/{args.run_name}", wandb.run.name)
     args.log_dir += f'_seed{args.seed}'
@@ -229,6 +247,10 @@ if __name__ == '__main__':
     parser.add_argument('--robot', type=str, default="go1", choices=["go1", "go2"])
     parser.add_argument('--wo_two_stage', action='store_true', default=False)
     parser.add_argument('--use_rot6d', action='store_true', default=False)
+    parser.add_argument('--wandb_entity', type=str, default=None, help='W&B account/team name')
+    parser.add_argument('--wandb_project', type=str, default=None, help='W&B project name')
+    parser.add_argument('--wandb_dir', type=str, default=None, help='W&B local metadata directory')
+    parser.add_argument('--wandb_mode', type=str, default=None, choices=['online', 'offline', 'disabled'])
 
     args = parser.parse_args()
 
