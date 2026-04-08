@@ -118,6 +118,7 @@ class LeggedRobot(BaseTask):
                 self._draw_ee_ori_coord()
                 self._draw_command_ori_coord()
                 self._draw_base_ori_coord()
+                self._draw_arm_collision_bbox()
 
     def draw_coord_pos_quat(self, x, y, z, quat, scale=0.1):
         draw_scale = scale
@@ -130,23 +131,55 @@ class LeggedRobot(BaseTask):
         gymutil.draw_lines(axes_geom, self.gym, self.viewer, self.envs[0], axes_pose)
 
     def draw_sphere_and_axes(self, position, quaternion, sphere_radius, sphere_color, scale=0.1):
-        sphere_geom = gymutil.WireframeSphereGeometry(sphere_radius, 4, 4, None, color=sphere_color)
+        sphere_geom = gymutil.WireframeSphereGeometry(sphere_radius, 10, 10, None, color=sphere_color)
         sphere_pose = gymapi.Transform(gymapi.Vec3(*position), r=None)
         gymutil.draw_lines(sphere_geom, self.gym, self.viewer, self.envs[0], sphere_pose)
         self.draw_coord_pos_quat(*position, quaternion, scale)
 
     def _draw_ee_ori_coord(self):
-        self.grasper_move = torch.tensor([0.1, 0, 0], dtype=torch.float, device=self.device).reshape(1, -1)
-        self.grasper_move_in_world = quat_rotate(self.end_effector_state[0:1, 3:7], self.grasper_move)
+        # 1. 计算偏移后的末端姿态
+        ee_quat_raw = self.end_effector_state[0, 3:7].unsqueeze(0)
+        # 计算：新姿态 = 原始姿态 * 偏置
+        ee_quat_new = quat_mul(ee_quat_raw, self.ee_rot_offset[0:1])[0]
+
+        # 2. 计算可视化球体的位置（如果 grasper_move 也需要跟随新坐标系，需要调整）
+        self.grasper_move = torch.tensor([0.12, 0, 0], dtype=torch.float, device=self.device).reshape(1, -1) # 现在 X 是向外了
+        self.grasper_move_in_world = quat_rotate(ee_quat_new.unsqueeze(0), self.grasper_move)
         self.grasper_in_world = self.end_effector_state[0, :3] + self.grasper_move_in_world
 
         x, y, z = self.grasper_in_world[0, 0], self.grasper_in_world[0, 1], self.grasper_in_world[0, 2]
-        ee_quat = self.end_effector_state[0, 3:7]
-        self.draw_sphere_and_axes((x, y, z), ee_quat, 0.02, (1, 1, 0))
+        
+        # 使用旋转后的 ee_quat_new 进行绘制
+        self.draw_sphere_and_axes((x, y, z), ee_quat_new, 0.02, (1, 1, 0))
 
     def _draw_base_ori_coord(self):
         x, y, z = self.base_pos[0].split(1, dim=-1)
         self.draw_sphere_and_axes((x.item(), y.item(), z.item()), self.base_quat[0], 0.2, (0, 1, 1), scale=1)
+
+    def _draw_arm_collision_bbox(self):
+        # Draw arm command rejection box in base-yaw local frame for env 0.
+        bbox = torch.stack([self.arm_collision_lower_limits, self.arm_collision_upper_limits], dim=0)
+        bbox_geom = gymutil.WireframeBBoxGeometry(bbox, None, color=(1, 0, 0))
+
+        forward = quat_apply(self.base_quat[0:1], self.forward_vec[0:1])
+        yaw = torch.atan2(forward[:, 1], forward[:, 0])
+        zero = torch.zeros_like(yaw)
+        base_yaw_quat = quat_from_euler_xyz(zero, zero, yaw)[0]
+
+        pose = gymapi.Transform(
+            gymapi.Vec3(
+                self.root_states[0, 0].item(),
+                self.root_states[0, 1].item(),
+                self.root_states[0, 2].item(),
+            ),
+            r=gymapi.Quat(
+                base_yaw_quat[0].item(),
+                base_yaw_quat[1].item(),
+                base_yaw_quat[2].item(),
+                base_yaw_quat[3].item(),
+            ),
+        )
+        gymutil.draw_lines(bbox_geom, self.gym, self.viewer, self.envs[0], pose=pose)
 
     def _draw_command_ori_coord(self):
         x, y, z = self.lpy_to_world_xyz()
@@ -545,7 +578,11 @@ class LeggedRobot(BaseTask):
         self.rew_buf_neg_arm[:] = 0.
         for i in range(len(reward_scales)):
             name = self.reward_names[i]
-            rew = self.reward_functions[i]() * reward_scales[name]
+            rew_raw = self.reward_functions[i]()
+            if name == "arm_manip_commands_tracking_combine":
+                self.debug_arm_manip_commands_tracking_combine_raw[:] = rew_raw
+                self.debug_arm_manip_commands_tracking_combine_scaled[:] = rew_raw * reward_scales[name]
+            rew = rew_raw * reward_scales[name]
             
             if name in ['vis_manip_commands_tracking_lpy', 'vis_manip_commands_tracking_rpy']:
                 self.episode_sums[name] += rew
@@ -612,8 +649,14 @@ class LeggedRobot(BaseTask):
         forward = quat_apply(self.base_quat[env_ids], self.forward_vec[env_ids])
         yaw = torch.atan2(forward[:, 1], forward[:, 0])
 
-        self.grasper_move = torch.tensor([0.1, 0, 0], dtype=torch.float, device=self.device).repeat((len(env_ids), 1))
-        self.grasper_move_in_world = quat_rotate(self.end_effector_state[env_ids, 3:7], self.grasper_move)
+        # 1. 应用旋转偏置到 EE 姿态
+        ee_quat_raw = self.end_effector_state[env_ids, 3:7]
+        ee_quat_new = quat_mul(ee_quat_raw, self.ee_rot_offset[env_ids])
+
+        # 2. 计算向外延伸的位移（假设现在 X 是垂直向外）
+        self.grasper_move = torch.tensor([0.12, 0, 0], dtype=torch.float, device=self.device).repeat((len(env_ids), 1))
+        self.grasper_move_in_world = quat_rotate(ee_quat_new, self.grasper_move)
+
         self.grasper_in_world = self.end_effector_state[env_ids, :3] + self.grasper_move_in_world
 
         x = torch.cos(yaw) * (self.grasper_in_world[:, 0] - self.root_states[env_ids, 0]) \
@@ -632,7 +675,9 @@ class LeggedRobot(BaseTask):
         forward = quat_apply(self.base_quat[env_ids], self.forward_vec[env_ids])
         yaw = torch.atan2(forward[:, 1], forward[:, 0])
         base_quats = quat_from_euler_xyz(torch.zeros_like(yaw), torch.zeros_like(yaw), yaw)
-        ee_in_base_quats = quat_mul(quat_conjugate(base_quats), self.end_effector_state[:, 3:7])
+        ee_quat_raw = self.end_effector_state[env_ids, 3:7]
+        ee_quat_new = quat_mul(ee_quat_raw, self.ee_rot_offset[env_ids])
+        ee_in_base_quats = quat_mul(quat_conjugate(base_quats), ee_quat_new)
         abg = self.quat_to_angle(ee_in_base_quats)
         
         return abg 
@@ -843,6 +888,75 @@ class LeggedRobot(BaseTask):
         self.obj_abg_in_ee[:] = self.quat_to_angle(rot_in_ee)
         
         return self.obj_abg_in_ee[:]
+
+    def _apply_resample_delta_limit(self, previous, sampled, low, high, max_delta, angle_like=False):
+        low = float(low)
+        high = float(high)
+        max_delta = float(max_delta)
+        if max_delta <= 0:
+            return torch.clamp(sampled, low, high)
+
+        if angle_like:
+            delta = wrap_to_pi(sampled - previous)
+        else:
+            delta = sampled - previous
+        delta = torch.clamp(delta, -max_delta, max_delta)
+        limited = previous + delta
+        if angle_like:
+            limited = wrap_to_pi(limited)
+        return torch.clamp(limited, low, high)
+
+    def _arm_lpy_to_local_xyz(self, lpy):
+        l = lpy[..., 0]
+        p = lpy[..., 1]
+        y = lpy[..., 2]
+        x = l * torch.cos(p) * torch.cos(y)
+        y_local = l * torch.cos(p) * torch.sin(y)
+        z = l * torch.sin(p)
+        return torch.stack([x, y_local, z], dim=-1)
+
+    def _arm_target_collision_mask(self, start_lpy, goal_lpy):
+        if len(start_lpy) == 0:
+            return torch.zeros(0, dtype=torch.bool, device=self.device)
+
+        traj_lpy = torch.lerp(start_lpy.unsqueeze(1), goal_lpy.unsqueeze(1), self.arm_collision_check_t)
+        traj_xyz = self._arm_lpy_to_local_xyz(traj_lpy)
+
+        in_collision_box = torch.logical_and(
+            torch.all(traj_xyz < self.arm_collision_upper_limits.view(1, 1, 3), dim=-1),
+            torch.all(traj_xyz > self.arm_collision_lower_limits.view(1, 1, 3), dim=-1),
+        )
+        collision_mask = torch.any(in_collision_box, dim=1)
+        underground_mask = torch.any(traj_xyz[..., 2] < self.arm_underground_limit, dim=1)
+        return collision_mask | underground_mask
+
+    def _get_delta_curriculum_ratio(self):
+        arm_stage_iter = max(0, global_switch.count - global_switch.pretrained_to_hybrid_start)
+        start_iter = int(self.cfg.arm.commands.delta_curriculum_start_iter)
+        end_iter = int(self.cfg.arm.commands.delta_curriculum_end_iter)
+        if end_iter <= start_iter:
+            return 1.0
+
+        progress = (arm_stage_iter - start_iter) / float(end_iter - start_iter)
+        progress = max(0.0, min(1.0, progress))
+
+        power = float(self.cfg.arm.commands.delta_curriculum_power)
+        if power <= 0:
+            power = 1.0
+        return progress ** power
+
+    def _get_curriculum_delta_limit(self, base_delta, low, high):
+        base_delta = float(base_delta)
+        if base_delta <= 0:
+            return base_delta
+
+        full_span = float(high - low)
+        if full_span <= 0:
+            return base_delta
+
+        base_delta = min(max(base_delta, 0.0), full_span)
+        ratio = self._get_delta_curriculum_ratio()
+        return base_delta + (full_span - base_delta) * ratio
 
     def _resample_arm_commands(self, env_ids):
         if len(env_ids) == 0: return
@@ -1370,7 +1484,12 @@ class LeggedRobot(BaseTask):
                                           device=self.device, requires_grad=False)  # lpy, rpy for transfer to camera base
         self.target_abg = torch.zeros(self.num_envs, 3, dtype=torch.float,
                                           device=self.device, requires_grad=False)
-                
+        
+                # 在 _init_buffers 中添加
+        # 这里的旋转需要根据你当前的具体坐标系方向微调
+        # 示例：绕 Y 轴旋转 90 度 (w, x, y, z)
+        self.ee_rot_offset = to_torch([0.0, 0.7071, 0.0, -0.7071], device=self.device).repeat(self.num_envs, 1)
+
         self.end_effector_state = self.rigid_body_state.view(self.num_envs, self.num_bodies, 13)[:, self.ee_idx] # link6
         self.x_vector = to_torch([1., 0., 0.], device=self.device).repeat((self.num_envs, 1))
         self.y_vector = to_torch([0., 1., 0.], device=self.device).repeat((self.num_envs, 1))
@@ -1390,6 +1509,23 @@ class LeggedRobot(BaseTask):
             device=self.device,
             requires_grad=False,
         ).reshape(1, -1)
+        self.arm_collision_lower_limits = torch.tensor(
+            self.cfg.arm.commands.collision_lower_limits,
+            dtype=torch.float,
+            device=self.device,
+            requires_grad=False,
+        )
+        self.arm_collision_upper_limits = torch.tensor(
+            self.cfg.arm.commands.collision_upper_limits,
+            dtype=torch.float,
+            device=self.device,
+            requires_grad=False,
+        )
+        self.arm_underground_limit = float(self.cfg.arm.commands.underground_limit)
+        num_collision_samples = max(2, int(self.cfg.arm.commands.num_collision_check_samples))
+        self.arm_collision_check_t = torch.linspace(
+            0.0, 1.0, num_collision_samples, device=self.device, dtype=torch.float, requires_grad=False
+        ).view(1, -1, 1)
         
         self.obj_obs_pose_in_ee = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
         self.obj_pose_in_ee = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
@@ -1399,6 +1535,12 @@ class LeggedRobot(BaseTask):
         self.rew_buf_arm = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.rew_buf_pos_arm = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.rew_buf_neg_arm = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
+        self.debug_arm_manip_commands_tracking_combine_raw = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+        self.debug_arm_manip_commands_tracking_combine_scaled = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
         self.T_trajs = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False) # command time
         
         self.T_force = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False) # ee force time
@@ -1596,6 +1738,20 @@ class LeggedRobot(BaseTask):
         # save body names from the asset
         body_names = self.gym.get_asset_rigid_body_names(self.robot_asset)
         self.body_names = body_names
+
+        # print("Robot body names: 1111111111111111111111")
+        # [新增] 动态获取替换后机器臂末端的 ee_idx
+        # 比如 Piper 的末端名字可能是 'piper_link8' 或者 'tcp_link'
+        # ee_name = "piper_link8" # 根据你的 URDF 改成 "piper_link8" 或是别的
+        # if ee_name in body_names:
+        #     self.ee_idx = body_names.index(ee_name)
+        #     print(f"Found end-effector body '{ee_name}' at index {self.ee_idx}")
+        #     print(f"End-effector body name: {body_names[self.ee_idx]}")
+        # else:
+        #     # 兼容以前的 ARX5 代码
+        #     self.ee_idx = body_names.index('zarx_body6') if 'zarx_body6' in body_names else 23
+        
+
         self.dof_names = self.gym.get_asset_dof_names(self.robot_asset)
         self.num_bodies = len(body_names)
         self.num_dofs = len(self.dof_names)

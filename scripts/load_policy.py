@@ -95,6 +95,7 @@ def load_env(logdir, wrapper, headless=False, device='cuda:0'):
       Cfg.terrain.teleport_robots = False
 
     # turn off DR for evaluation script
+    Cfg.use_rot6d = False
     Cfg.domain_rand.push_robots = False
     Cfg.domain_rand.randomize_friction = False
     Cfg.domain_rand.randomize_gravity = False
