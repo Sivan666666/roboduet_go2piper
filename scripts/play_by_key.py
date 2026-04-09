@@ -4,6 +4,8 @@ import torch
 from isaacgym.torch_utils import *
 from go1_gym.envs import *
 from go1_gym.envs.automatic import KeyboardWrapper
+from go1_gym.utils import quaternion_to_rpy
+from go1_gym.utils.math_utils import wrap_to_pi
 from scripts.load_policy import load_dog_policy, load_arm_policy, load_env
 import argparse
 
@@ -19,7 +21,7 @@ ENABLE_ARM_JOINT_PLOT = True
 PLOT_NUM_JOINTS = 6
 PLOT_HISTORY_S = 10.0
 PLOT_UPDATE_EVERY = 2
-PRINT_TRACKING_ERR_INTERVAL_S = 5.0
+PRINT_TRACKING_ERR_INTERVAL_S = 2.0
 
 
 class ArmJointPlotter:
@@ -33,19 +35,27 @@ class ArmJointPlotter:
         self.cmd_hist = [[] for _ in joint_names]
         self.act_hist = [[] for _ in joint_names]
         self.reward_hist = []
-        self.collision_hist = []
+        self.position_error_hist = []
+        self.orientation_error_hist = []
+        self.orientation_axis_error_hists = [[], [], []]
 
         try:
             import matplotlib.pyplot as plt
             self.plt = plt
             self.plt.ion()
-            self.fig, (self.ax_joint, self.ax_reward, self.ax_collision) = self.plt.subplots(
+            self.fig = self.plt.figure(figsize=(12, 11.6))
+            gs = self.fig.add_gridspec(
+                5,
                 3,
-                1,
-                figsize=(10, 8.4),
-                sharex=True,
-                gridspec_kw={"height_ratios": [3.0, 1.2, 1.0]},
+                height_ratios=[3.0, 1.1, 1.0, 1.0, 1.0],
             )
+            self.ax_joint = self.fig.add_subplot(gs[0, :])
+            self.ax_reward = self.fig.add_subplot(gs[1, :], sharex=self.ax_joint)
+            self.ax_pos_err = self.fig.add_subplot(gs[2, :], sharex=self.ax_joint)
+            self.ax_ori_err = self.fig.add_subplot(gs[3, :], sharex=self.ax_joint)
+            self.ax_ori_x = self.fig.add_subplot(gs[4, 0], sharex=self.ax_joint)
+            self.ax_ori_y = self.fig.add_subplot(gs[4, 1], sharex=self.ax_joint)
+            self.ax_ori_z = self.fig.add_subplot(gs[4, 2], sharex=self.ax_joint)
             self.cmd_lines = []
             self.act_lines = []
             for name in joint_names:
@@ -56,22 +66,45 @@ class ArmJointPlotter:
             (self.reward_line,) = self.ax_reward.plot(
                 [], [], color="tab:red", linewidth=1.8, label="raw reward"
             )
-            (self.collision_line,) = self.ax_collision.plot(
-                [], [], color="tab:purple", linewidth=1.8, label="collision count"
+            (self.position_error_line,) = self.ax_pos_err.plot(
+                [], [], color="tab:purple", linewidth=1.8, label="position error"
             )
+            (self.orientation_error_line,) = self.ax_ori_err.plot(
+                [], [], color="tab:green", linewidth=1.8, label="orientation error"
+            )
+            axis_colors = ["tab:blue", "tab:orange", "tab:brown"]
+            axis_titles = ["Roll Error", "Pitch Error", "Yaw Error"]
+            axis_labels = ["roll", "pitch", "yaw"]
+            self.ax_ori_axes = [self.ax_ori_x, self.ax_ori_y, self.ax_ori_z]
+            self.orientation_axis_lines = []
+            for ax, color, title, label in zip(self.ax_ori_axes, axis_colors, axis_titles, axis_labels):
+                (line,) = ax.plot([], [], color=color, linewidth=1.6, label=label)
+                self.orientation_axis_lines.append(line)
+                ax.set_title(title)
+                ax.set_ylabel("deg")
+                ax.set_xlabel("Time [s]")
+                ax.grid(True, alpha=0.3)
+                ax.legend(loc="upper right", fontsize=8)
             self.ax_joint.set_title("Arm Joint Command vs Actual (absolute rad)")
             self.ax_joint.set_ylabel("Joint Angle [rad]")
+            self.ax_joint.set_xlabel("Time [s]")
             self.ax_joint.grid(True, alpha=0.3)
             self.ax_joint.legend(loc="upper right", ncol=3, fontsize=8)
             self.ax_reward.set_title("_reward_arm_manip_commands_tracking_combine")
             self.ax_reward.set_ylabel("Reward")
+            self.ax_reward.set_xlabel("Time [s]")
             self.ax_reward.grid(True, alpha=0.3)
             self.ax_reward.legend(loc="upper right", fontsize=8)
-            self.ax_collision.set_title("_reward_collision raw count")
-            self.ax_collision.set_xlabel("Time [s]")
-            self.ax_collision.set_ylabel("Count")
-            self.ax_collision.grid(True, alpha=0.3)
-            self.ax_collision.legend(loc="upper right", fontsize=8)
+            self.ax_pos_err.set_title("End-Effector Position Error")
+            self.ax_pos_err.set_ylabel("Error [cm]")
+            self.ax_pos_err.set_xlabel("Time [s]")
+            self.ax_pos_err.grid(True, alpha=0.3)
+            self.ax_pos_err.legend(loc="upper right", fontsize=8)
+            self.ax_ori_err.set_title("End-Effector Orientation Error")
+            self.ax_ori_err.set_ylabel("Error [deg]")
+            self.ax_ori_err.set_xlabel("Time [s]")
+            self.ax_ori_err.grid(True, alpha=0.3)
+            self.ax_ori_err.legend(loc="upper right", fontsize=8)
             self.fig.tight_layout()
             self.enabled = True
         except Exception as exc:
@@ -89,7 +122,17 @@ class ArmJointPlotter:
             y_pad = pad_ratio * (y_max - y_min)
         ax.set_ylim(y_min - y_pad, y_max + y_pad)
 
-    def update(self, step_id, t, cmd_values, act_values, reward_value, collision_count):
+    def update(
+        self,
+        step_id,
+        t,
+        cmd_values,
+        act_values,
+        reward_value,
+        position_error,
+        orientation_error,
+        orientation_axis_errors,
+    ):
         if not self.enabled:
             return
 
@@ -98,7 +141,10 @@ class ArmJointPlotter:
             self.cmd_hist[i].append(float(cmd_values[i]))
             self.act_hist[i].append(float(act_values[i]))
         self.reward_hist.append(float(reward_value))
-        self.collision_hist.append(float(collision_count))
+        self.position_error_hist.append(float(position_error))
+        self.orientation_error_hist.append(float(orientation_error))
+        for i in range(3):
+            self.orientation_axis_error_hists[i].append(float(orientation_axis_errors[i]))
 
         min_t = self.t_hist[-1] - self.history_s
         keep_idx = 0
@@ -110,7 +156,10 @@ class ArmJointPlotter:
                 self.cmd_hist[i] = self.cmd_hist[i][keep_idx:]
                 self.act_hist[i] = self.act_hist[i][keep_idx:]
             self.reward_hist = self.reward_hist[keep_idx:]
-            self.collision_hist = self.collision_hist[keep_idx:]
+            self.position_error_hist = self.position_error_hist[keep_idx:]
+            self.orientation_error_hist = self.orientation_error_hist[keep_idx:]
+            for i in range(3):
+                self.orientation_axis_error_hists[i] = self.orientation_axis_error_hists[i][keep_idx:]
 
         if step_id % self.update_every != 0:
             return
@@ -119,7 +168,10 @@ class ArmJointPlotter:
             self.cmd_lines[i].set_data(self.t_hist, self.cmd_hist[i])
             self.act_lines[i].set_data(self.t_hist, self.act_hist[i])
         self.reward_line.set_data(self.t_hist, self.reward_hist)
-        self.collision_line.set_data(self.t_hist, self.collision_hist)
+        self.position_error_line.set_data(self.t_hist, self.position_error_hist)
+        self.orientation_error_line.set_data(self.t_hist, self.orientation_error_hist)
+        for i in range(3):
+            self.orientation_axis_lines[i].set_data(self.t_hist, self.orientation_axis_error_hists[i])
 
         t0 = self.t_hist[0] if self.t_hist else 0.0
         t1 = self.t_hist[-1] if self.t_hist else 1.0
@@ -127,7 +179,11 @@ class ArmJointPlotter:
             t1 = t0 + 1e-3
         self.ax_joint.set_xlim(t0, t1)
         self.ax_reward.set_xlim(t0, t1)
-        self.ax_collision.set_xlim(t0, t1)
+        self.ax_pos_err.set_xlim(t0, t1)
+        self.ax_ori_err.set_xlim(t0, t1)
+        self.ax_ori_x.set_xlim(t0, t1)
+        self.ax_ori_y.set_xlim(t0, t1)
+        self.ax_ori_z.set_xlim(t0, t1)
 
         flat = []
         for i in range(len(self.joint_names)):
@@ -135,7 +191,10 @@ class ArmJointPlotter:
             flat.extend(self.act_hist[i])
         self._set_axis_ylim(self.ax_joint, flat, pad_ratio=0.08, min_pad=0.05)
         self._set_axis_ylim(self.ax_reward, self.reward_hist, pad_ratio=0.10, min_pad=0.02)
-        self._set_axis_ylim(self.ax_collision, self.collision_hist, pad_ratio=0.10, min_pad=0.2)
+        self._set_axis_ylim(self.ax_pos_err, self.position_error_hist, pad_ratio=0.10, min_pad=0.005)
+        self._set_axis_ylim(self.ax_ori_err, self.orientation_error_hist, pad_ratio=0.10, min_pad=0.01)
+        for i in range(3):
+            self._set_axis_ylim(self.ax_ori_axes[i], self.orientation_axis_error_hists[i], pad_ratio=0.10, min_pad=0.5)
         if self.reward_hist:
             reward_latest = self.reward_hist[-1]
             reward_mean = sum(self.reward_hist) / len(self.reward_hist)
@@ -144,14 +203,27 @@ class ArmJointPlotter:
                 "_reward_arm_manip_commands_tracking_combine "
                 f"(env0, latest={reward_latest:.4f}, mean={reward_mean:.4f}, min={reward_min:.4f})"
             )
-        if self.collision_hist:
-            coll_latest = self.collision_hist[-1]
-            coll_mean = sum(self.collision_hist) / len(self.collision_hist)
-            coll_max = max(self.collision_hist)
-            self.ax_collision.set_title(
-                "_reward_collision raw count "
-                f"(env0, latest={coll_latest:.1f}, mean={coll_mean:.2f}, max={coll_max:.1f})"
+        if self.position_error_hist:
+            pos_latest = self.position_error_hist[-1]
+            pos_mean = sum(self.position_error_hist) / len(self.position_error_hist)
+            pos_max = max(self.position_error_hist)
+            self.ax_pos_err.set_title(
+                "End-Effector Position Error "
+                f"(env0, latest={pos_latest:.4f}, mean={pos_mean:.4f}, max={pos_max:.4f})"
             )
+        if self.orientation_error_hist:
+            ori_latest = self.orientation_error_hist[-1]
+            ori_mean = sum(self.orientation_error_hist) / len(self.orientation_error_hist)
+            ori_max = max(self.orientation_error_hist)
+            self.ax_ori_err.set_title(
+                "End-Effector Orientation Error "
+                f"(env0, latest={ori_latest:.4f}, mean={ori_mean:.4f}, max={ori_max:.4f})"
+            )
+        axis_titles = ["Roll Error", "Pitch Error", "Yaw Error"]
+        for i in range(3):
+            if self.orientation_axis_error_hists[i]:
+                latest = self.orientation_axis_error_hists[i][-1]
+                self.ax_ori_axes[i].set_title(f"{axis_titles[i]} (latest error={latest:.2f} deg)")
 
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
@@ -171,14 +243,32 @@ def get_arm_manip_tracking_reward(env):
     return float(reward[0].detach().cpu().item())
 
 
-def get_collision_count(env):
+def get_end_effector_errors(env):
     with torch.no_grad():
-        if env.penalised_contact_indices.numel() == 0:
-            return 0.0
-        colliding = torch.norm(
-            env.contact_forces[:, env.penalised_contact_indices, :], dim=-1
-        ) > 0.1
-        return float(torch.sum(colliding[0]).detach().cpu().item())
+        env_ids = torch.arange(1, device=env.device)
+        actual_lpy = env.get_lpy_in_base_coord(env_ids)
+        target_lpy = env.commands_arm_obs[0:1, 0:3]
+        actual_xyz = env._arm_lpy_to_local_xyz(actual_lpy)
+        target_xyz = env._arm_lpy_to_local_xyz(target_lpy)
+        position_error_cm = torch.linalg.norm(actual_xyz - target_xyz, dim=1) * 100.0
+
+        forward = quat_apply(env.base_quat[env_ids], env.forward_vec[env_ids])
+        base_yaw = torch.atan2(forward[:, 1], forward[:, 0])
+        base_yaw_quat = quat_from_euler_xyz(torch.zeros_like(base_yaw), torch.zeros_like(base_yaw), base_yaw)
+        ee_quat_raw = env.end_effector_state[env_ids, 3:7]
+        ee_quat_new = quat_mul(ee_quat_raw, env.ee_rot_offset[env_ids])
+        actual_rpy = quaternion_to_rpy(quat_mul(quat_conjugate(base_yaw_quat), ee_quat_new)).to(env.device)
+        target_rpy = quaternion_to_rpy(env.obj_quats[0:1]).to(env.device)
+
+        rpy_delta = wrap_to_pi(actual_rpy - target_rpy)
+        orientation_error_deg = torch.linalg.norm(rpy_delta, dim=1) * (180.0 / torch.pi)
+        orientation_axis_errors_deg = rpy_delta[0] * (180.0 / torch.pi)
+
+        return (
+            float(position_error_cm[0].detach().cpu().item()),
+            float(orientation_error_deg[0].detach().cpu().item()),
+            orientation_axis_errors_deg.detach().cpu().tolist(),
+        )
 
 
 def play_go1(args):
@@ -272,7 +362,7 @@ def play_go1(args):
             arm_action_plot = arm_action[0, :arm_count].detach().cpu()
             env.step(actions_dog, arm_action)
             manip_reward = get_arm_manip_tracking_reward(env)
-            collision_count = get_collision_count(env)
+            position_error, orientation_error, orientation_axis_errors = get_end_effector_errors(env)
 
             arm_joint_cmd_abs = default_arm + arm_action_plot * action_scale
             arm_joint_actual_abs = env.dof_pos[0, arm_idx].detach().cpu()
@@ -299,7 +389,9 @@ def play_go1(args):
                     arm_joint_cmd_abs[:plot_joint_num].numpy(),
                     arm_joint_actual_abs[:plot_joint_num].numpy(),
                     manip_reward,
-                    collision_count,
+                    position_error,
+                    orientation_error,
+                    orientation_axis_errors,
                 )
     finally:
         if arm_plotter is not None:
