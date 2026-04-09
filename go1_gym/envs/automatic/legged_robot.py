@@ -919,15 +919,17 @@ class LeggedRobot(BaseTask):
         if len(start_lpy) == 0:
             return torch.zeros(0, dtype=torch.bool, device=self.device)
 
-        traj_lpy = torch.lerp(start_lpy.unsqueeze(1), goal_lpy.unsqueeze(1), self.arm_collision_check_t)
-        traj_xyz = self._arm_lpy_to_local_xyz(traj_lpy)
+        # Only check the sampled end target itself. Do not reject a command just
+        # because the interpolated path from the previous target passes through
+        # the box.
+        goal_xyz = self._arm_lpy_to_local_xyz(goal_lpy)
 
         in_collision_box = torch.logical_and(
-            torch.all(traj_xyz < self.arm_collision_upper_limits.view(1, 1, 3), dim=-1),
-            torch.all(traj_xyz > self.arm_collision_lower_limits.view(1, 1, 3), dim=-1),
+            torch.all(goal_xyz < self.arm_collision_upper_limits.view(1, 3), dim=-1),
+            torch.all(goal_xyz > self.arm_collision_lower_limits.view(1, 3), dim=-1),
         )
-        collision_mask = torch.any(in_collision_box, dim=1)
-        underground_mask = torch.any(traj_xyz[..., 2] < self.arm_underground_limit, dim=1)
+        collision_mask = in_collision_box
+        underground_mask = goal_xyz[..., 2] < self.arm_underground_limit
         return collision_mask | underground_mask
 
     def _get_delta_curriculum_ratio(self):
@@ -969,9 +971,23 @@ class LeggedRobot(BaseTask):
         if not global_switch.switch_open: return
         
         # position
-        self.commands_arm[env_ids, 0] = torch_rand_float(self.cfg.arm.commands.l[0], self.cfg.arm.commands.l[1], (env_ids.shape[0], 1), device=self.device).squeeze()
-        self.commands_arm[env_ids, 1] = torch_rand_float(self.cfg.arm.commands.p[0], self.cfg.arm.commands.p[1], (env_ids.shape[0], 1), device=self.device).squeeze()
-        self.commands_arm[env_ids, 2] = torch_rand_float(self.cfg.arm.commands.y[0], self.cfg.arm.commands.y[1], (env_ids.shape[0], 1), device=self.device).squeeze()
+        previous_lpy = self.commands_arm[env_ids, 0:3].clone()
+        sampled_l = torch_rand_float(
+            self.cfg.arm.commands.l[0], self.cfg.arm.commands.l[1], (env_ids.shape[0], 1), device=self.device
+        ).squeeze(1)
+        sampled_p = torch_rand_float(
+            self.cfg.arm.commands.p[0], self.cfg.arm.commands.p[1], (env_ids.shape[0], 1), device=self.device
+        ).squeeze(1)
+        sampled_y = torch_rand_float(
+            self.cfg.arm.commands.y[0], self.cfg.arm.commands.y[1], (env_ids.shape[0], 1), device=self.device
+        ).squeeze(1)
+        candidate_lpy = torch.stack([sampled_l, sampled_p, sampled_y], dim=-1)
+
+        # If the newly sampled end target is invalid, keep the previous command.
+        invalid_mask = self._arm_target_collision_mask(previous_lpy, candidate_lpy)
+        next_lpy = candidate_lpy.clone()
+        next_lpy[invalid_mask] = previous_lpy[invalid_mask]
+        self.commands_arm[env_ids, 0:3] = next_lpy
 
         
         self.commands_arm_obs[env_ids, 0] = self.commands_arm[env_ids, 0]

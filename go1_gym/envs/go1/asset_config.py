@@ -25,12 +25,12 @@ ARM_STIFFNESS_ARM = {
         # "piper_joint8": 20,
         'piper_joint1': 40,
         'piper_joint2': 80,
-        'piper_joint3': 40,
-        'piper_joint4': 10,
-        'piper_joint5': 40,
-        'piper_joint6': 10,
-        'piper_joint7': 10,
-        'piper_joint8': 10
+        'piper_joint3': 80,
+        'piper_joint4': 40,
+        'piper_joint5': 80,
+        'piper_joint6': 40,
+        'piper_joint7': 40,
+        'piper_joint8': 40
 }  # [N*m/rad]
 
 ARM_DAMPING_ARM = {
@@ -54,12 +54,12 @@ ARM_DAMPING_ARM = {
         # "piper_joint8": 0.5,
         'piper_joint1': 3,
         'piper_joint2': 6,
-        'piper_joint3': 3,
-        'piper_joint4': 1.5,
-        'piper_joint5': 3,
-        'piper_joint6': 1.5,
-        'piper_joint7': 1.5,
-        'piper_joint8': 1.5
+        'piper_joint3': 6,
+        'piper_joint4': 3,
+        'piper_joint5': 6,
+        'piper_joint6': 3,
+        'piper_joint7': 3,
+        'piper_joint8': 3
 }  # [N*m*s/rad]
 
 ARM_COMMAND_SAFETY = {
