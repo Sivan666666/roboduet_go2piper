@@ -323,6 +323,8 @@ def play_go1(args):
             )
     
     env.env.enable_viewer_sync = True
+    if not args.headless and getattr(env, "viewer", None) is not None:
+        env.env.fixed_cam = True
 
     num_eval_steps = 30000
 

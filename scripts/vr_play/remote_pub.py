@@ -1,20 +1,24 @@
 #!/usr/bin/env python
 import lcm
-from time import sleep
+from time import sleep, monotonic
 import signal
 import sys
 import numpy as np
 import zmq
 import pickle
+from datetime import datetime
+from pathlib import Path
 
 sys.path.append("../")
 
 from go1_gym.lcm_types.arm_actions_t import arm_actions_t
  
 # NOTE This is the ip and port of the pc host connected to vr
-GLOBAL_IP = "192.168.1.126"
+GLOBAL_IP = "192.168.1.114"
 GLOBAL_PORT = "34567"
 lcm_node = lcm.LCM("udpm://239.255.76.67:7136?ttl=255")
+
+LEFT_ARM_FIELD_NAMES = ["x", "y", "z", "roll", "pitch", "yaw"]
 
 def calibrate(sock: zmq.Socket, start_pose=None):
     print("Starting calibration. Please keep the controller steady.")
@@ -64,6 +68,12 @@ def get_handles_msg(sock: zmq.Socket, offset):
     return action, a, b, x, y, thumb_x, thumb_y
 
 
+def format_left_pose_log(pose, delta_t, timestamp_str):
+    values = [f"{name}={value:.6f}" for name, value in zip(LEFT_ARM_FIELD_NAMES, pose)]
+    dt_text = "N/A" if delta_t is None else f"{delta_t * 1000.0:.3f} ms"
+    return f"[{timestamp_str}] left pose | dt={dt_text} | " + ", ".join(values)
+
+
 def main():
     np.set_printoptions(precision=3)
     arm_pose_msg = arm_actions_t()
@@ -77,12 +87,25 @@ def main():
     sock = context.socket(zmq.PULL)
     sock.connect(f"tcp://{GLOBAL_IP}:{GLOBAL_PORT}")
     print("socket connected!")
+
+    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"remote_pub_left_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_file = log_path.open("a", encoding="utf-8")
+    log_file.write(
+        "# left pose data fields: x, y, z, roll, pitch, yaw\n"
+        "# dt: time interval since previous logged left pose\n"
+    )
+    log_file.flush()
+    print(f"left pose log file: {log_path}")
+    last_left_log_time = None
     
     # securely close the context
     shutdown = False
     def signal_handler(sig, frame):
         global shutdown
         shutdown = True
+        log_file.close()
         sock.close()
         context.term()
         exit(0)
@@ -122,7 +145,14 @@ def main():
             if np.sum(np.abs(previous_pose[0:3] - action[0:3])+0.2*np.abs(previous_pose[3:6] - action[3:6])) > arm_delta:
                 arm_pose_msg.data = action[0:6]
                 previous_pose = action[0:6]
-                print('left', arm_pose_msg.data)
+                now_mono = monotonic()
+                delta_t = None if last_left_log_time is None else (now_mono - last_left_log_time)
+                last_left_log_time = now_mono
+                timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                log_line = format_left_pose_log(arm_pose_msg.data, delta_t, timestamp_str)
+                print(log_line)
+                log_file.write(log_line + "\n")
+                log_file.flush()
                 lcm_node.publish("arm_control_data", arm_pose_msg.encode())
 
 

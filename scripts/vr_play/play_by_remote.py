@@ -29,6 +29,10 @@ x_vel_cmd, y_vel_cmd, yaw_vel_cmd = 0., 0.0, 0
 l_cmd, p_cmd, y_cmd = 0.5, 0.2, 0.0
 roll_cmd, pitch_cmd, yaw_cmd = 0.1, 0.5, 0.0
 
+REMOTE_CMD_FILTER_RATE = 0.85
+REMOTE_CMD_JUMP_POS_THRESH = 0.05
+REMOTE_CMD_JUMP_ANG_THRESH = 0.2
+
 shutdown = False
 delta_xyzrpy = np.zeros(6)
 last_lcm_recv_time = 0.0
@@ -63,6 +67,8 @@ class ArmJointPlotter:
             self.ax.set_ylabel("Joint Angle [rad]")
             self.ax.grid(True, alpha=0.3)
             self.ax.legend(loc="upper right", ncol=2)
+            self.plt.show(block=False)
+            self.plt.pause(0.001)
             self.enabled = True
         except Exception as exc:
             self.plt = None
@@ -109,6 +115,89 @@ class ArmJointPlotter:
 
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
+        self.plt.pause(0.001)
+
+    def close(self):
+        if self.enabled:
+            self.plt.ioff()
+            self.plt.close(self.fig)
+            self.enabled = False
+
+
+class RemoteCommandPlotter:
+    def __init__(self, history_s=5.0, update_every=2):
+        self.history_s = float(history_s)
+        self.update_every = max(1, int(update_every))
+        self.enabled = False
+        self.command_names = ["x", "y", "z", "roll", "pitch", "yaw"]
+        self.t_hist = []
+        self.v_hist = [[] for _ in self.command_names]
+
+        try:
+            import matplotlib.pyplot as plt
+
+            self.plt = plt
+            self.plt.ion()
+            self.fig, self.axes = self.plt.subplots(2, 3, figsize=(12, 6), sharex=True)
+            self.axes = self.axes.flatten()
+            self.lines = []
+            for ax, name in zip(self.axes, self.command_names):
+                (line,) = ax.plot([], [], linewidth=1.8)
+                ax.set_title(f"{name} remote")
+                ax.set_xlabel("Time [s]")
+                ax.set_ylabel("Value")
+                ax.grid(True, alpha=0.3)
+                self.lines.append(line)
+            self.fig.tight_layout()
+            self.plt.show(block=False)
+            self.plt.pause(0.001)
+            self.enabled = True
+        except Exception as exc:
+            self.plt = None
+            print(f"[plot] matplotlib init failed, disable remote command plotting: {exc}")
+
+    def update(self, step_id, t, values):
+        if not self.enabled:
+            return
+
+        self.t_hist.append(float(t))
+        for i, v in enumerate(values):
+            self.v_hist[i].append(float(v))
+
+        min_t = self.t_hist[-1] - self.history_s
+        keep_idx = 0
+        while keep_idx < len(self.t_hist) and self.t_hist[keep_idx] < min_t:
+            keep_idx += 1
+        if keep_idx > 0:
+            self.t_hist = self.t_hist[keep_idx:]
+            for i in range(len(self.v_hist)):
+                self.v_hist[i] = self.v_hist[i][keep_idx:]
+
+        if step_id % self.update_every != 0:
+            return
+
+        t0 = self.t_hist[0] if self.t_hist else 0.0
+        t1 = self.t_hist[-1] if self.t_hist else 1.0
+        if t1 <= t0:
+            t1 = t0 + 1e-3
+
+        for i, line in enumerate(self.lines):
+            series = self.v_hist[i]
+            line.set_data(self.t_hist, series)
+            ax = self.axes[i]
+            ax.set_xlim(t0, t1)
+            if series:
+                y_min = min(series)
+                y_max = max(series)
+                if y_max - y_min < 1e-3:
+                    y_pad = 0.05
+                else:
+                    y_pad = 0.08 * (y_max - y_min)
+                ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
+        self.plt.pause(0.001)
 
     def close(self):
         if self.enabled:
@@ -135,6 +224,34 @@ def lcm_thread():
         # Use timeout so the loop can observe shutdown quickly.
         lcm_node.handle_timeout(50)
 
+
+def wrap_to_pi_np(angle):
+    return (angle + np.pi) % (2 * np.pi) - np.pi
+
+
+def detect_remote_command_jump(previous_pose, current_pose):
+    if previous_pose is None:
+        return False, 0.0, 0.0
+
+    pos_delta = current_pose[:3] - previous_pose[:3]
+    ang_delta = np.array(
+        [wrap_to_pi_np(current_pose[i] - previous_pose[i]) for i in range(3, 6)],
+        dtype=np.float64,
+    )
+    pos_norm = float(np.linalg.norm(pos_delta))
+    ang_norm = float(np.linalg.norm(ang_delta))
+    is_jump = (pos_norm > REMOTE_CMD_JUMP_POS_THRESH) or (ang_norm > REMOTE_CMD_JUMP_ANG_THRESH)
+    return is_jump, pos_norm, ang_norm
+
+
+def format_remote_pose_log(data, dt_ms):
+    return (
+        "left pose | "
+        f"dt={dt_ms:.3f} ms | "
+        f"x={data[0]:.6f}, y={data[1]:.6f}, z={data[2]:.6f}, "
+        f"roll={data[3]:.6f}, pitch={data[4]:.6f}, yaw={data[5]:.6f}"
+    )
+
 def play_go1(args):
     
     signal.signal(signal.SIGINT, signal_handler)
@@ -160,7 +277,7 @@ def play_go1(args):
         wrapper=KeyboardWrapper,
         headless=args.headless,
         device=args.sim_device,
-        apply_asset_config_override=True,
+        apply_asset_config_override=False,
         arm_kp=args.arm_kp,
         arm_kd=args.arm_kd,
         arm_joint_names=arm_joint_names,
@@ -187,9 +304,14 @@ def play_go1(args):
             history_s=args.plot_history_s,
             update_every=args.plot_update_every,
         )
+    remote_cmd_plotter = None
+    if args.plot_remote_commands:
+        remote_cmd_plotter = RemoteCommandPlotter(history_s=5.0, update_every=args.plot_update_every)
     
     # NOTE: env is a HistoryWrapper; render flags must be set on the wrapped env.
     env.env.enable_viewer_sync = True
+    if not args.headless and getattr(env, "viewer", None) is not None:
+        env.env.fixed_cam = True
 
     num_eval_steps = 30000
 
@@ -219,6 +341,10 @@ def play_go1(args):
     
     last_arm_actions = None
     last_pitch_roll = None
+    last_remote_pose_raw = None
+    filtered_remote_cmd = None
+    last_logged_lcm_seq = 0
+    last_logged_lcm_time = None
     filter_rate = 0.8
     pitch_filter_rate = 0.95
     
@@ -229,8 +355,25 @@ def play_go1(args):
 
             # Only use remote delta when LCM data is fresh; otherwise keep default command.
             now = time.time()
+            if lcm_data_seq > last_logged_lcm_seq:
+                dt_ms = 0.0 if last_logged_lcm_time is None else max(0.0, (last_lcm_recv_time - last_logged_lcm_time) * 1000.0)
+                print(format_remote_pose_log(delta_xyzrpy, dt_ms))
+                last_logged_lcm_seq = lcm_data_seq
+                last_logged_lcm_time = last_lcm_recv_time
+
             has_fresh_lcm = (lcm_data_seq > 0) and ((now - last_lcm_recv_time) <= lcm_stale_timeout_s)
             if has_fresh_lcm:
+                current_remote_pose = delta_xyzrpy.copy()
+                is_jump, pos_norm, ang_norm = detect_remote_command_jump(last_remote_pose_raw, current_remote_pose)
+                if is_jump:
+                    print(
+                        "跳变！！ "
+                        f"pos_jump={pos_norm:.4f}, ang_jump={ang_norm:.4f} | "
+                        f"x={current_remote_pose[0]:.6f}, y={current_remote_pose[1]:.6f}, z={current_remote_pose[2]:.6f}, "
+                        f"roll={current_remote_pose[3]:.6f}, pitch={current_remote_pose[4]:.6f}, yaw={current_remote_pose[5]:.6f}"
+                    )
+                last_remote_pose_raw = current_remote_pose
+
                 delta_x1, delta_y1, delta_z1, delta_roll, delta_pitch, delta_yaw = delta_xyzrpy
                 delta_x1 += 0.3
                 delta_l = np.sqrt(delta_x1**2 + delta_y1**2 + delta_z1**2)
@@ -246,19 +389,34 @@ def play_go1(args):
                 cmd_gamma = min(max(delta_yaw, -1.4), 1.4)
                 cmd_alpha, cmd_beta, cmd_gamma = rpy_to_abg(cmd_alpha, cmd_beta, cmd_gamma)
 
-                env.commands_arm[:, 0] = cmd_l
-                env.commands_arm[:, 1] = cmd_p
-                env.commands_arm[:, 2] = cmd_y
-                env.commands_arm[:, 3] = cmd_alpha
-                env.commands_arm[:, 4] = cmd_beta
-                env.commands_arm[:, 5] = cmd_gamma
+                raw_remote_cmd = np.array([cmd_l, cmd_p, cmd_y, cmd_alpha, cmd_beta, cmd_gamma], dtype=np.float64)
+                if filtered_remote_cmd is None:
+                    filtered_remote_cmd = raw_remote_cmd.copy()
+                else:
+                    filtered_remote_cmd = (
+                        REMOTE_CMD_FILTER_RATE * filtered_remote_cmd
+                        + (1.0 - REMOTE_CMD_FILTER_RATE) * raw_remote_cmd
+                    )
+
+                env.commands_arm[:, 0] = filtered_remote_cmd[0]
+                env.commands_arm[:, 1] = filtered_remote_cmd[1]
+                env.commands_arm[:, 2] = filtered_remote_cmd[2]
+                env.commands_arm[:, 3] = filtered_remote_cmd[3]
+                env.commands_arm[:, 4] = filtered_remote_cmd[4]
+                env.commands_arm[:, 5] = filtered_remote_cmd[5]
             else:
-                env.commands_arm[:, 0] = default_cmd[0]
-                env.commands_arm[:, 1] = default_cmd[1]
-                env.commands_arm[:, 2] = default_cmd[2]
-                env.commands_arm[:, 3] = default_cmd[3]
-                env.commands_arm[:, 4] = default_cmd[4]
-                env.commands_arm[:, 5] = default_cmd[5]
+                # Keep the last commanded pose during brief remote dropouts
+                # instead of snapping back to the default command.
+                if filtered_remote_cmd is None:
+                    env.commands_arm[:, 0] = default_cmd[0]
+                    env.commands_arm[:, 1] = default_cmd[1]
+                    env.commands_arm[:, 2] = default_cmd[2]
+                    env.commands_arm[:, 3] = default_cmd[3]
+                    env.commands_arm[:, 4] = default_cmd[4]
+                    env.commands_arm[:, 5] = default_cmd[5]
+
+            if remote_cmd_plotter is not None:
+                remote_cmd_plotter.update(i, i * float(env.dt), delta_xyzrpy.copy())
 
             # Synchronize internal command buffers so the rendered marker follows remote/default target
             # instead of stale sampled targets.
@@ -294,6 +452,8 @@ def play_go1(args):
             pass
         if arm_plotter is not None:
             arm_plotter.close()
+        if remote_cmd_plotter is not None:
+            remote_cmd_plotter.close()
 
 
 def quat_apply(a, b):
@@ -419,6 +579,7 @@ if __name__ == '__main__':
         help='comma separated joint names to override, e.g. piper_joint1,piper_joint2',
     )
     parser.add_argument('--plot_arm_joints', action='store_true', default=False, help='realtime plot arm target joints')
+    parser.add_argument('--plot_remote_commands', action='store_true', default=False, help='realtime plot received x/y/z/rpy commands')
     parser.add_argument('--plot_num_joints', type=int, default=6, help='number of arm joints to plot')
     parser.add_argument('--plot_history_s', type=float, default=10.0, help='history window length in seconds')
     parser.add_argument('--plot_update_every', type=int, default=2, help='plot redraw interval in steps')
