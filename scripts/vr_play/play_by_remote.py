@@ -252,6 +252,23 @@ def format_remote_pose_log(data, dt_ms):
         f"roll={data[3]:.6f}, pitch={data[4]:.6f}, yaw={data[5]:.6f}"
     )
 
+
+def lpy_to_local_xyz_np(lpy):
+    l, p, yaw = lpy
+    x = l * np.cos(p) * np.cos(yaw)
+    y_local = l * np.cos(p) * np.sin(yaw)
+    z = l * np.sin(p)
+    return np.array([x, y_local, z], dtype=np.float64)
+
+
+def local_xyz_to_lpy_np(xyz):
+    x, y_local, z = xyz
+    l = np.sqrt(x ** 2 + y_local ** 2 + z ** 2)
+    horiz = np.sqrt(x ** 2 + y_local ** 2)
+    p = np.arctan2(z, horiz)
+    yaw = np.arctan2(y_local, x)
+    return np.array([l, p, yaw], dtype=np.float64)
+
 def play_go1(args):
     
     signal.signal(signal.SIGINT, signal_handler)
@@ -335,6 +352,10 @@ def play_go1(args):
     env.env.update_arm_commands()
 
     default_cmd = np.array([l_cmd, p_cmd, y_cmd, roll_cmd, pitch_cmd, yaw_cmd], dtype=np.float64)
+    home_lpy = default_cmd[:3].copy()
+    home_xyz = lpy_to_local_xyz_np(home_lpy)
+    arm_lpy_low = np.array([cfg.arm.commands.l[0], cfg.arm.commands.p[0], cfg.arm.commands.y[0]], dtype=np.float64)
+    arm_lpy_high = np.array([cfg.arm.commands.l[1], cfg.arm.commands.p[1], cfg.arm.commands.y[1]], dtype=np.float64)
     lcm_stale_timeout_s = 0.3
     
     obs = env.get_arm_observations()
@@ -342,7 +363,7 @@ def play_go1(args):
     last_arm_actions = None
     last_pitch_roll = None
     last_remote_pose_raw = None
-    filtered_remote_cmd = None
+    filtered_remote_pose = None
     last_logged_lcm_seq = 0
     last_logged_lcm_time = None
     filter_rate = 0.8
@@ -374,40 +395,37 @@ def play_go1(args):
                     )
                 last_remote_pose_raw = current_remote_pose
 
-                delta_x1, delta_y1, delta_z1, delta_roll, delta_pitch, delta_yaw = delta_xyzrpy
-                delta_x1 += 0.3
-                delta_l = np.sqrt(delta_x1**2 + delta_y1**2 + delta_z1**2)
-                delta_y = np.arctan2(delta_y1, delta_x1)
-                delta_p = np.arcsin(delta_z1 / delta_l) if delta_l != 0 else 0
-
-                cmd_l = min(max(delta_l + 0.2, 0.3), 0.8)  # 0.3 ~ 0.8
-                cmd_p = min(max(delta_p + 0.3, -np.pi/3), np.pi/3)   # -pi/3 ~ pi/3
-                cmd_y = min(max(delta_y, -np.pi/2), np.pi/2)  # -pi/2 ~ pi/2
-
+                delta_pos = current_remote_pose[:3]
+                delta_roll, delta_pitch, delta_yaw = current_remote_pose[3:6]
+                target_xyz = home_xyz + delta_pos
                 cmd_alpha = min(max(delta_roll, -np.pi * 0.45), np.pi * 0.45)
                 cmd_beta = min(max(delta_pitch, -1.5), 1.5)
                 cmd_gamma = min(max(delta_yaw, -1.4), 1.4)
                 cmd_alpha, cmd_beta, cmd_gamma = rpy_to_abg(cmd_alpha, cmd_beta, cmd_gamma)
 
-                raw_remote_cmd = np.array([cmd_l, cmd_p, cmd_y, cmd_alpha, cmd_beta, cmd_gamma], dtype=np.float64)
-                if filtered_remote_cmd is None:
-                    filtered_remote_cmd = raw_remote_cmd.copy()
+                raw_remote_pose_cmd = np.array(
+                    [target_xyz[0], target_xyz[1], target_xyz[2], cmd_alpha, cmd_beta, cmd_gamma],
+                    dtype=np.float64,
+                )
+                if filtered_remote_pose is None:
+                    filtered_remote_pose = raw_remote_pose_cmd.copy()
                 else:
-                    filtered_remote_cmd = (
-                        REMOTE_CMD_FILTER_RATE * filtered_remote_cmd
-                        + (1.0 - REMOTE_CMD_FILTER_RATE) * raw_remote_cmd
+                    filtered_remote_pose = (
+                        REMOTE_CMD_FILTER_RATE * filtered_remote_pose
+                        + (1.0 - REMOTE_CMD_FILTER_RATE) * raw_remote_pose_cmd
                     )
 
-                env.commands_arm[:, 0] = filtered_remote_cmd[0]
-                env.commands_arm[:, 1] = filtered_remote_cmd[1]
-                env.commands_arm[:, 2] = filtered_remote_cmd[2]
-                env.commands_arm[:, 3] = filtered_remote_cmd[3]
-                env.commands_arm[:, 4] = filtered_remote_cmd[4]
-                env.commands_arm[:, 5] = filtered_remote_cmd[5]
+                filtered_lpy = np.clip(local_xyz_to_lpy_np(filtered_remote_pose[:3]), arm_lpy_low, arm_lpy_high)
+                env.commands_arm[:, 0] = filtered_lpy[0]
+                env.commands_arm[:, 1] = filtered_lpy[1]
+                env.commands_arm[:, 2] = filtered_lpy[2]
+                env.commands_arm[:, 3] = filtered_remote_pose[3]
+                env.commands_arm[:, 4] = filtered_remote_pose[4]
+                env.commands_arm[:, 5] = filtered_remote_pose[5]
             else:
                 # Keep the last commanded pose during brief remote dropouts
                 # instead of snapping back to the default command.
-                if filtered_remote_cmd is None:
+                if filtered_remote_pose is None:
                     env.commands_arm[:, 0] = default_cmd[0]
                     env.commands_arm[:, 1] = default_cmd[1]
                     env.commands_arm[:, 2] = default_cmd[2]
