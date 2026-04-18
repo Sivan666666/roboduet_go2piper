@@ -118,6 +118,7 @@ class LeggedRobot(BaseTask):
                 self._draw_ee_ori_coord()
                 self._draw_command_ori_coord()
                 self._draw_base_ori_coord()
+                # print("i am here")
                 self._draw_arm_collision_bbox()
 
     def draw_coord_pos_quat(self, x, y, z, quat, scale=0.1):
@@ -157,6 +158,7 @@ class LeggedRobot(BaseTask):
         self.draw_sphere_and_axes((x.item(), y.item(), z.item()), self.base_quat[0], 0.2, (0, 1, 1), scale=1)
 
     def _draw_arm_collision_bbox(self):
+        print("i am here")
         # Draw arm command rejection box in base-yaw local frame for env 0.
         bbox = torch.stack([self.arm_collision_lower_limits, self.arm_collision_upper_limits], dim=0)
         bbox_geom = gymutil.WireframeBBoxGeometry(bbox, None, color=(1, 0, 0))

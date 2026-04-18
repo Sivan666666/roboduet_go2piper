@@ -539,6 +539,8 @@ class KeyboardWrapper(VelocityTrackingEasyEnv):
             self._draw_ee_ori_coord()
             self._draw_command_ori_coord()
             self._draw_base_ori_coord()
+            # print("i am here")
+            self._draw_arm_collision_bbox()
     
         self.update_arm_commands()
 
